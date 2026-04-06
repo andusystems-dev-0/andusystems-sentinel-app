@@ -186,6 +186,7 @@ func main() {
 
 	case "doc-gen":
 		if *targetRepo != "" {
+			syncGitHubDescription(ctx, githubClient, cfg, *targetRepo)
 			if err := docGen.RunFull(ctx, *targetRepo); err != nil {
 				slog.Error("doc-gen failed", "repo", *targetRepo, "err", err)
 				os.Exit(1)
@@ -195,6 +196,7 @@ func main() {
 				if r.Excluded {
 					continue
 				}
+				syncGitHubDescription(ctx, githubClient, cfg, r.Name)
 				slog.Info("doc-gen: starting", "repo", r.Name)
 				if err := docGen.RunFull(ctx, r.Name); err != nil {
 					slog.Error("doc-gen failed", "repo", r.Name, "err", err)
@@ -462,4 +464,18 @@ func parsePushBranch(payload []byte) string {
 		return ""
 	}
 	return strings.TrimPrefix(p.Ref, "refs/heads/")
+}
+
+// syncGitHubDescription ensures the GitHub repo description matches the config.
+// Best-effort — logs a warning on failure but never aborts the caller.
+func syncGitHubDescription(ctx context.Context, gh *forge.GitHubClient, cfg *config.Config, repoName string) {
+	for _, r := range cfg.Repos {
+		if r.Name == repoName && r.GitHubPath != "" && r.Description != "" {
+			if err := gh.EnsureRepo(ctx, r.GitHubPath, r.Description); err != nil {
+				slog.Warn("doc-gen: sync github description failed",
+					"repo", repoName, "err", err)
+			}
+			return
+		}
+	}
 }
