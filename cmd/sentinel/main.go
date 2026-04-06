@@ -18,6 +18,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/robfig/cron/v3"
 
+	"github.com/andusystems/sentinel/internal/[AI_ASSISTANT]"
 	"github.com/andusystems/sentinel/internal/config"
 	"github.com/andusystems/sentinel/internal/discord"
 	"github.com/andusystems/sentinel/internal/docs"
@@ -97,9 +98,16 @@ func main() {
 	batcher := llm.NewBatcher(llmClient, cfg)
 
 	// ---- Sanitization pipeline -----------------------------------------------
+	// [AI_ASSISTANT] Code CLI is the backend for both Layer 3 and the Layer 2
+	// fallback. We do NOT make direct [AI_PROVIDER] API calls from Go — the CLI
+	// handles its own authentication (subscription or ANTHROPIC_API_KEY).
 	var claudeAPI types.ClaudeAPIClient
-	if cfg.ClaudeAPI.APIKey != "" {
-		claudeAPI = &claudeAPIStub{cfg: cfg}
+	if cfg.ClaudeCode.BinaryPath != "" {
+		claudeAPI = [AI_ASSISTANT].NewClient(
+			cfg.ClaudeCode.BinaryPath,
+			cfg.ClaudeCode.Flags,
+			0, // default CLI timeout (2m)
+		)
 	}
 	sanitizePipeline, err := sanitize.NewPipeline(llmClient, claudeAPI, &cfg.Sanitize)
 	if err != nil {
@@ -152,7 +160,7 @@ func main() {
 	// ---- Webhook queue + processor -------------------------------------------
 	queue := webhook.NewQueue(cfg.Webhook.EventQueueSize)
 	prDisp := &prEventDispatch{syncHandler: syncHandler}
-	pushDisp := &pushEventDispatch{db: db, forge: forgejoClient, notifier: notifier, cfg: cfg}
+	pushDisp := &pushEventDispatch{db: db, forge: forgejoClient, notifier: notifier, cfg: cfg, syncRunner: syncRunner}
 	processor := webhook.NewEventProcessor(queue, prDisp, pushDisp, cfg.Webhook.ProcessingWorkers)
 
 	// ---- Context + shutdown --------------------------------------------------
@@ -288,22 +296,6 @@ func main() {
 	slog.Info("sentinel stopped")
 }
 
-// ---- [AI_ASSISTANT] API stub --------------------------------------------------------
-
-// claudeAPIStub implements types.ClaudeAPIClient.
-// Replace with a full [AI_PROVIDER] SDK client for production.
-type claudeAPIStub struct {
-	cfg *config.Config
-}
-
-func (c *claudeAPIStub) SanitizeChunk(_ context.Context, content string) ([]types.SanitizationFinding, error) {
-	// STUB: Full [AI_PROVIDER] SDK implementation.
-	// When complete, this sends content to [AI_ASSISTANT]-sonnet-4-6 via the Messages API,
-	// rate-limited by golang.org/x/time/rate (rpm_limit tokens/minute).
-	slog.Debug("[AI_ASSISTANT] API Layer 3 stub called", "content_len", len(content))
-	return nil, nil
-}
-
 // ---- Webhook event dispatchers ----------------------------------------------
 
 type prEventDispatch struct {
@@ -315,15 +307,36 @@ func (d *prEventDispatch) HandlePREvent(ctx context.Context, event types.Forgejo
 }
 
 type pushEventDispatch struct {
-	db       *store.DB
-	forge    types.ForgejoProvider
-	notifier *prnotify.Notifier
-	cfg      *config.Config
+	db         *store.DB
+	forge      types.ForgejoProvider
+	notifier   *prnotify.Notifier
+	cfg        *config.Config
+	syncRunner *syncp.Runner
 }
 
 func (d *pushEventDispatch) HandlePushEvent(ctx context.Context, event types.ForgejoEvent) {
 	branch := parsePushBranch(event.Payload)
+	if branch == "" {
+		return
+	}
+
+	// Non-sentinel pushes: if the branch is the repo's default/main branch,
+	// trigger Mode 3 incremental sync (Forgejo → GitHub mirror).
 	if !strings.HasPrefix(branch, "sentinel/") {
+		if !d.isRepoConfigured(event.Repo) {
+			return
+		}
+		if !isDefaultBranch(branch) {
+			slog.Debug("push handler: ignoring non-default branch",
+				"repo", event.Repo, "branch", branch)
+			return
+		}
+		slog.Info("push handler: triggering Mode 3 sync",
+			"repo", event.Repo, "branch", branch)
+		if err := d.syncRunner.Sync(ctx, event.Repo); err != nil {
+			slog.Error("push handler: sync failed",
+				"repo", event.Repo, "branch", branch, "err", err)
+		}
 		return
 	}
 
@@ -389,6 +402,22 @@ func (d *pushEventDispatch) HandlePushEvent(ctx context.Context, event types.For
 	d.db.Tasks.SetPRNumber(ctx, task.ID, prNumber)
 
 	slog.Info("push handler: PR opened", "repo", event.Repo, "branch", branch, "pr", prNumber)
+}
+
+// isRepoConfigured returns true if a repo name is in cfg.Repos and sync-enabled.
+func (d *pushEventDispatch) isRepoConfigured(repoName string) bool {
+	for _, r := range d.cfg.Repos {
+		if r.Name == repoName {
+			return r.SyncEnabled && !r.Excluded
+		}
+	}
+	return false
+}
+
+// isDefaultBranch returns true for common default branch names.
+// Sentinel only syncs pushes on main/master; other branches are ignored.
+func isDefaultBranch(branch string) bool {
+	return branch == "main" || branch == "master"
 }
 
 // parsePushBranch extracts the branch name from a Forgejo push webhook payload.

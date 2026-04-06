@@ -46,17 +46,31 @@ func (c *GitHubClient) githubPaths(repoPath string) (string, string, error) {
 	return splitGitHubPath(repoPath)
 }
 
-// EnsureRepo creates the GitHub mirror repo if it doesn't exist.
-// This is a no-op if the repo already exists.
-func (c *GitHubClient) EnsureRepo(ctx context.Context, repoPath string) error {
+// EnsureRepo creates the GitHub mirror repo if it doesn't exist, and sets its
+// description. If the repo already exists, the description is updated to match
+// description (unless description is empty, in which case it is left alone).
+func (c *GitHubClient) EnsureRepo(ctx context.Context, repoPath, description string) error {
 	owner, name, err := c.githubPaths(repoPath)
 	if err != nil {
 		return err
 	}
 
-	_, resp, err := c.client.Repositories.Get(ctx, owner, name)
+	existing, resp, err := c.client.Repositories.Get(ctx, owner, name)
 	if err == nil {
-		return nil // Already exists.
+		// Already exists — sync description if it drifted.
+		if description == "" {
+			return nil
+		}
+		if existing.GetDescription() == description {
+			return nil
+		}
+		_, _, err = c.client.Repositories.Edit(ctx, owner, name, &gogithub.Repository{
+			Description: gogithub.String(description),
+		})
+		if err != nil {
+			return fmt.Errorf("update github repo description %s: %w", repoPath, err)
+		}
+		return nil
 	}
 	if resp == nil || resp.StatusCode != 404 {
 		return fmt.Errorf("check github repo %s: %w", repoPath, err)
@@ -64,10 +78,14 @@ func (c *GitHubClient) EnsureRepo(ctx context.Context, repoPath string) error {
 
 	// Create it.
 	private := true
-	_, _, err = c.client.Repositories.Create(ctx, owner, &gogithub.Repository{
+	newRepo := &gogithub.Repository{
 		Name:    gogithub.String(name),
 		Private: &private,
-	})
+	}
+	if description != "" {
+		newRepo.Description = gogithub.String(description)
+	}
+	_, _, err = c.client.Repositories.Create(ctx, owner, newRepo)
 	if err != nil {
 		return fmt.Errorf("create github mirror repo %s: %w", repoPath, err)
 	}

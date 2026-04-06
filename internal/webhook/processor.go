@@ -81,10 +81,9 @@ func (p *EventProcessor) dispatch(ctx context.Context, event types.ForgejoEvent,
 		}
 	case "push":
 		if p.pushHandler != nil {
-			headRef := extractHeadRef(event.Payload)
-			if strings.HasPrefix(headRef, "sentinel/") {
-				p.pushHandler.HandlePushEvent(ctx, event)
-			}
+			// Pass ALL pushes to the handler; it routes on branch name
+			// (sentinel/* → open PR, default branch → trigger Mode 3 sync).
+			p.pushHandler.HandlePushEvent(ctx, event)
 		}
 	case "issue_comment":
 		if p.prHandler != nil && containsReviewCommand(event.Payload) {

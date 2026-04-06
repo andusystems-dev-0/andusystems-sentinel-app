@@ -63,6 +63,10 @@ const roleCSystem = `You are a technical writer. You write concise, clear prose 
 Output only the requested text. No preamble, no explanation, no JSON.
 Match the tone: professional, direct, developer-focused.`
 
+// RoleDSystem is the exported alias of roleDSystem for use by other packages
+// (e.g. the [AI_ASSISTANT] API sanitization fallback).
+var RoleDSystem = roleDSystem
+
 const roleDSystem = `You are a security assistant analyzing source code for sensitive values.
 Output ONLY valid JSON. No prose.
 

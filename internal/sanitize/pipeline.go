@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/andusystems/sentinel/internal/config"
 	"github.com/andusystems/sentinel/internal/types"
@@ -26,7 +27,8 @@ type Pipeline struct {
 }
 
 // NewPipeline constructs a SanitizationPipeline.
-// [AI_ASSISTANT] may be nil — Layer 3 is skipped if the API key is not configured.
+// [AI_ASSISTANT] may be nil — Layer 3 is skipped AND Layer 2 has no [AI_ASSISTANT] fallback
+// if the API key is not configured.
 func NewPipeline(llm types.LLMClient, [AI_ASSISTANT] types.ClaudeAPIClient, cfg *config.SanitizeConfig) (*Pipeline, error) {
 	l1, err := newLayer1Gitleaks()
 	if err != nil {
@@ -38,9 +40,10 @@ func NewPipeline(llm types.LLMClient, [AI_ASSISTANT] types.ClaudeAPIClient, cfg 
 		l3 = newLayer3Claude([AI_ASSISTANT])
 	}
 
+	timeout := time.Duration(cfg.Layer2TimeoutSeconds) * time.Second
 	return &Pipeline{
 		l1:  l1,
-		l2:  newLayer2LLM(llm),
+		l2:  newLayer2LLM(llm, [AI_ASSISTANT], timeout),
 		l3:  l3,
 		cfg: cfg,
 	}, nil

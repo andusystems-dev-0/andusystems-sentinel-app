@@ -68,11 +68,12 @@ func (m *Manager) Migrate(ctx context.Context, repoName string, force bool) erro
 		return fmt.Errorf("repo %q already migrated. Use --force to re-migrate", repoName)
 	}
 
-	// Resolve GitHub path from config.
-	var githubPath string
+	// Resolve GitHub path + description from config.
+	var githubPath, description string
 	for _, r := range m.cfg.Repos {
 		if r.Name == repoName {
 			githubPath = r.GitHubPath
+			description = r.Description
 			break
 		}
 	}
@@ -80,10 +81,11 @@ func (m *Manager) Migrate(ctx context.Context, repoName string, force bool) erro
 		return fmt.Errorf("repo %q not found in config", repoName)
 	}
 
-	// GitHub preflight: validate token and create the mirror repo if it doesn't
-	// exist. This runs before sanitization so auth failures surface immediately
-	// rather than after all the expensive processing is done.
-	if err := m.github.EnsureRepo(ctx, githubPath); err != nil {
+	// GitHub preflight: validate token, create the mirror repo if it doesn't
+	// exist, and sync its description. This runs before sanitization so auth
+	// failures surface immediately rather than after all the expensive
+	// processing is done.
+	if err := m.github.EnsureRepo(ctx, githubPath, description); err != nil {
 		m.discord.PostChannelMessage(ctx, m.cfg.Discord.CommandChannelID,
 			fmt.Sprintf(
 				"❌ Migration preflight failed for **%s**\n\n"+
@@ -150,6 +152,14 @@ func (m *Manager) Migrate(ctx context.Context, repoName string, force bool) erro
 		return nil
 	})
 	m.wtLock.Unlock(repoName)
+
+	// Wipe the GitHub staging directory so this migration produces a single
+	// clean commit on the remote (no leaked Forgejo history, no accumulated
+	// sentinel commits from prior runs). Subsequent Mode 3 syncs will build
+	// incremental history on top of this base commit.
+	if err := m.wt.ResetGitHubStaging(ctx, repoName); err != nil {
+		return fmt.Errorf("reset github staging: %w", err)
+	}
 
 	// Start migration.
 	m.db.Reviews.StartMigration(ctx, repoName)
@@ -250,9 +260,12 @@ func (m *Manager) Migrate(ctx context.Context, repoName string, force bool) erro
 		}
 	}
 
-	// Single squashed push.
-	if _, err := m.wt.PushAllStaging(ctx, repoName, fmt.Sprintf("chore(migrate): initial sentinel migration of %s", repoName)); err != nil {
+	// Single orphan commit force-pushed to main — overwrites any prior
+	// GitHub history so the initial migration is always one clean commit.
+	if sha, err := m.wt.PushAllStagingInitial(ctx, repoName, fmt.Sprintf("chore(migrate): initial sentinel migration of %s", repoName)); err != nil {
 		slog.Error("migration: push staging failed", "repo", repoName, "err", err)
+	} else {
+		slog.Info("migration: push staging ok", "repo", repoName, "sha", sha)
 	}
 
 	// Update state.

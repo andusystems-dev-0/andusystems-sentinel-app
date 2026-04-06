@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 
 	"github.com/andusystems/sentinel/internal/config"
@@ -68,7 +69,10 @@ func (m *Manager) EnsureForgejoWorktree(ctx context.Context, repo string) error 
 		return nil
 	}
 
-	// Pull to update.
+	// Existing worktree: fetch and hard-reset the default branch to origin.
+	// Sentinel owns this worktree exclusively — any divergence from the remote
+	// is drift (stale local merges, rebased upstream) and should be discarded.
+	// Task/sentinel branches off main are preserved (not touched by reset).
 	r, err := gogit.PlainOpen(dir)
 	if err != nil {
 		return fmt.Errorf("open forgejo repo %s: %w", dir, err)
@@ -77,11 +81,72 @@ func (m *Manager) EnsureForgejoWorktree(ctx context.Context, repo string) error 
 	if err != nil {
 		return err
 	}
-	err = wt.PullContext(ctx, &gogit.PullOptions{Auth: auth})
-	if err != nil && err != gogit.NoErrAlreadyUpToDate {
-		return fmt.Errorf("pull %s: %w", repo, err)
+
+	if err := r.FetchContext(ctx, &gogit.FetchOptions{
+		Auth:  auth,
+		Prune: true,
+	}); err != nil && err != gogit.NoErrAlreadyUpToDate {
+		return fmt.Errorf("fetch %s: %w", repo, err)
+	}
+
+	defaultBranch, err := resolveOriginDefaultBranch(r)
+	if err != nil {
+		return fmt.Errorf("resolve default branch for %s: %w", repo, err)
+	}
+	remoteRef, err := r.Reference(
+		plumbing.ReferenceName("refs/remotes/origin/"+defaultBranch), true)
+	if err != nil {
+		return fmt.Errorf("resolve origin/%s for %s: %w", defaultBranch, repo, err)
+	}
+
+	// Checkout (or create) the local default branch pointing at origin's SHA.
+	localRef := plumbing.ReferenceName("refs/heads/" + defaultBranch)
+	if err := wt.Checkout(&gogit.CheckoutOptions{
+		Branch: localRef,
+		Create: false,
+		Force:  true,
+	}); err != nil {
+		// Branch may not exist locally yet — create it from the remote SHA.
+		if err := wt.Checkout(&gogit.CheckoutOptions{
+			Branch: localRef,
+			Hash:   remoteRef.Hash(),
+			Create: true,
+			Force:  true,
+		}); err != nil {
+			return fmt.Errorf("checkout %s for %s: %w", defaultBranch, repo, err)
+		}
+	}
+
+	// Hard-reset the default branch to match origin.
+	if err := wt.Reset(&gogit.ResetOptions{
+		Commit: remoteRef.Hash(),
+		Mode:   gogit.HardReset,
+	}); err != nil {
+		return fmt.Errorf("hard reset %s to origin/%s: %w", repo, defaultBranch, err)
 	}
 	return nil
+}
+
+// resolveOriginDefaultBranch returns the short name (e.g. "main") of the
+// default branch as advertised by the origin remote. Falls back to "main".
+func resolveOriginDefaultBranch(r *gogit.Repository) (string, error) {
+	// refs/remotes/origin/HEAD is a symbolic ref pointing at the real default.
+	head, err := r.Reference(plumbing.ReferenceName("refs/remotes/origin/HEAD"), false)
+	if err == nil && head.Type() == plumbing.SymbolicReference {
+		target := head.Target().String() // e.g. "refs/remotes/origin/main"
+		const prefix = "refs/remotes/origin/"
+		if len(target) > len(prefix) && target[:len(prefix)] == prefix {
+			return target[len(prefix):], nil
+		}
+	}
+	// Fallback: assume main.
+	if _, err := r.Reference(plumbing.ReferenceName("refs/remotes/origin/main"), true); err == nil {
+		return "main", nil
+	}
+	if _, err := r.Reference(plumbing.ReferenceName("refs/remotes/origin/master"), true); err == nil {
+		return "master", nil
+	}
+	return "", fmt.Errorf("no origin/main or origin/master ref found")
 }
 
 // ReadForgejoFile reads a file from the Forgejo worktree.
@@ -160,6 +225,18 @@ func (m *Manager) repoConfig(repo string) *config.RepoConfig {
 // ForgejoDir returns the Forgejo worktree directory path for a repo (used by pipeline/sync).
 func (m *Manager) ForgejoDir(repo string) string {
 	return m.forgejoDirFor(repo)
+}
+
+// ResetGitHubStaging removes the entire GitHub staging directory for a repo,
+// discarding any accumulated .git history and working-tree contents. Used by
+// Mode 4 initial migration to guarantee a single clean commit on GitHub.
+// Subsequent operations will re-init the dir via ensureGitHubRepo.
+func (m *Manager) ResetGitHubStaging(_ context.Context, repo string) error {
+	dir := m.githubDirFor(repo)
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("reset github staging %s: %w", repo, err)
+	}
+	return nil
 }
 
 // RemoveFromGitHubStaging deletes a file from the GitHub staging worktree.

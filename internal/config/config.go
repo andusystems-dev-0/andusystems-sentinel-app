@@ -127,6 +127,10 @@ type SanitizeConfig struct {
 	SkipPatterns              []string          `yaml:"skip_patterns"`
 	CategoryReasons           map[string]string `yaml:"category_reasons"`
 	ScrubPatterns             []ScrubPattern    `yaml:"scrub_patterns"`
+	// Layer2TimeoutSeconds bounds a single Ollama Layer-2 call. On timeout or
+	// any Ollama error, Layer 2 falls back to the [AI_ASSISTANT] API (if configured).
+	// Zero or negative uses the default of 60 seconds.
+	Layer2TimeoutSeconds int `yaml:"layer2_timeout_seconds"`
 }
 
 // ScrubPattern defines a regex substitution applied to all file content
@@ -161,6 +165,7 @@ type RepoConfig struct {
 	Name           string   `yaml:"name"`
 	ForgejoPath    string   `yaml:"forgejo_path"`
 	GitHubPath     string   `yaml:"github_path"`
+	Description    string   `yaml:"description"`
 	Languages      []string `yaml:"languages"`
 	FocusAreas     []string `yaml:"focus_areas"`
 	MaxTasksPerRun int      `yaml:"max_tasks_per_run"`

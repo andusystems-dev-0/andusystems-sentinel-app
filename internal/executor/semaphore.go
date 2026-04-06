@@ -14,3 +14,12 @@ func init() {
 
 func acquireClaudeCode() { <-claudeCodeSemaphore }
 func releaseClaudeCode() { claudeCodeSemaphore <- struct{}{} }
+
+// AcquireClaudeCode is the exported accessor for the [AI_ASSISTANT] Code CLI
+// semaphore. It MUST be paired with ReleaseClaudeCode. Used by the
+// sanitization pipeline so code-authoring tasks and sanitization calls
+// share a single serialization lock on the CLI.
+func AcquireClaudeCode() { acquireClaudeCode() }
+
+// ReleaseClaudeCode releases the [AI_ASSISTANT] Code CLI semaphore.
+func ReleaseClaudeCode() { releaseClaudeCode() }

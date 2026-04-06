@@ -124,15 +124,19 @@ func (b *Bot) SeedCommandReactions(_ context.Context, channelID, messageID strin
 	return nil
 }
 
+// messageSeparator is appended to every plain-text Discord message to give
+// long streams of sentinel output a visual break between entries.
+const messageSeparator = "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
 // PostChannelMessage sends a plain text message to a channel.
 func (b *Bot) PostChannelMessage(_ context.Context, channelID, content string) error {
-	_, err := b.session.ChannelMessageSend(channelID, content)
+	_, err := b.session.ChannelMessageSend(channelID, content+messageSeparator)
 	return err
 }
 
 // PostChannelMessageID sends a plain text message and returns the message ID.
 func (b *Bot) PostChannelMessageID(_ context.Context, channelID, content string) (string, error) {
-	msg, err := b.session.ChannelMessageSend(channelID, content)
+	msg, err := b.session.ChannelMessageSend(channelID, content+messageSeparator)
 	if err != nil {
 		return "", err
 	}
@@ -153,7 +157,7 @@ func (b *Bot) OpenThread(_ context.Context, channelID, messageID, name string) (
 
 // PostInThread sends a message into a thread.
 func (b *Bot) PostInThread(_ context.Context, threadID, content string) error {
-	_, err := b.session.ChannelMessageSend(threadID, content)
+	_, err := b.session.ChannelMessageSend(threadID, content+messageSeparator)
 	return err
 }
 

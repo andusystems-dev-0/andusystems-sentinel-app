@@ -3,19 +3,28 @@ package sanitize
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/andusystems/sentinel/internal/types"
 )
 
 // layer2LLM calls LLMClient.SanitizeChunk (Role D — Sanitization Semantic Pass).
 // It runs on the post-Layer-1 content (with high-confidence findings already replaced).
+// If Ollama exceeds timeout or errors, and a [AI_ASSISTANT] fallback is configured, the
+// same content is sent to [AI_ASSISTANT].
 type layer2LLM struct {
-	llm types.LLMClient
+	llm      types.LLMClient
+	fallback types.ClaudeAPIClient
+	timeout  time.Duration
 }
 
-func newLayer2LLM(llm types.LLMClient) *layer2LLM {
-	return &layer2LLM{llm: llm}
+func newLayer2LLM(llm types.LLMClient, fallback types.ClaudeAPIClient, timeout time.Duration) *layer2LLM {
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	return &layer2LLM{llm: llm, fallback: fallback, timeout: timeout}
 }
 
 // scan calls the LLM with the post-Layer-1 content and returns any additional findings.
@@ -28,10 +37,26 @@ func (l *layer2LLM) scan(
 	zones []types.SkipZone,
 	syncRunID string,
 ) ([]types.SanitizationFinding, error) {
-	raw, err := l.llm.SanitizeChunk(ctx, string(content))
+	callCtx, cancel := context.WithTimeout(ctx, l.timeout)
+	defer cancel()
+
+	raw, err := l.llm.SanitizeChunk(callCtx, string(content))
 	if err != nil {
-		slog.Warn("layer2 LLM sanitize error", "repo", repo, "file", filename, "err", err)
-		return nil, nil // non-fatal: proceed to Layer 3
+		timedOut := errors.Is(callCtx.Err(), context.DeadlineExceeded)
+		if l.fallback != nil {
+			slog.Warn("layer2 Ollama failed, falling back to [AI_ASSISTANT]",
+				"repo", repo, "file", filename, "timeout", timedOut, "err", err)
+			raw, err = l.fallback.SanitizeChunk(ctx, string(content))
+			if err != nil {
+				slog.Warn("layer2 [AI_ASSISTANT] fallback error",
+					"repo", repo, "file", filename, "err", err)
+				return nil, nil
+			}
+		} else {
+			slog.Warn("layer2 LLM sanitize error",
+				"repo", repo, "file", filename, "timeout", timedOut, "err", err)
+			return nil, nil // non-fatal: proceed to Layer 3
+		}
 	}
 
 	var valid []types.SanitizationFinding

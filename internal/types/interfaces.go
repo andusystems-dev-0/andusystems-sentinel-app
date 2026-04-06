@@ -26,6 +26,11 @@ type WorktreeManager interface {
 	// PushStagingFile — caller MUST hold FileMutexRegistry lock for (repo, filename)
 	PushStagingFile(ctx context.Context, repo, filename, commitMsg string) (commitSHA string, err error)
 	PushAllStaging(ctx context.Context, repo, commitMsg string) (commitSHA string, err error)
+	// PushAllStagingInitial force-pushes a single orphan commit to remote main.
+	// Used by Mode 4 initial migration for a clean single-commit history.
+	PushAllStagingInitial(ctx context.Context, repo, commitMsg string) (commitSHA string, err error)
+	// ResetGitHubStaging wipes the local GitHub staging directory and its git history.
+	ResetGitHubStaging(ctx context.Context, repo string) error
 	SentinelTag(category string) string
 }
 
@@ -178,7 +183,7 @@ type ForgejoProvider interface {
 
 // GitHubProvider wraps the GitHub API for the staging mirror.
 type GitHubProvider interface {
-	EnsureRepo(ctx context.Context, repoPath string) error
+	EnsureRepo(ctx context.Context, repoPath, description string) error
 	PushFile(ctx context.Context, repoPath, filename, commitMsg string, content []byte) error
 	PushFiles(ctx context.Context, repoPath, commitMsg string, files map[string][]byte) error
 }
