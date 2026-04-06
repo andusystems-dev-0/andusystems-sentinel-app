@@ -46,8 +46,13 @@ type ForgejoConfig struct {
 }
 
 type GitHubConfig struct {
-	BaseURL string `yaml:"base_url"`
-	Org     string `yaml:"org"`
+	BaseURL  string `yaml:"base_url"`
+	Org      string `yaml:"org"`
+	// GitName and GitEmail are used as the author/committer on GitHub mirror
+	// commits. Set these to your personal GitHub identity so mirror commits
+	// show as yours rather than the sentinel service account.
+	GitName  string `yaml:"git_name"`
+	GitEmail string `yaml:"git_email"`
 	// Token resolved from env: GITHUB_TOKEN
 	Token string `yaml:"-"`
 }

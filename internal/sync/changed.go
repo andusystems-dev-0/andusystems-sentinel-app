@@ -12,6 +12,66 @@ import (
 	"github.com/andusystems/sentinel/internal/types"
 )
 
+// CommitMessages returns the commit messages between fromSHA (exclusive) and
+// toSHA (inclusive) in reverse-chronological order. Used to build meaningful
+// GitHub mirror commit messages from the original Forgejo history.
+func CommitMessages(dir, fromSHA, toSHA string) ([]string, error) {
+	repo, err := gogit.PlainOpen(dir)
+	if err != nil {
+		return nil, err
+	}
+	toHash := plumbing.NewHash(toSHA)
+	iter, err := repo.Log(&gogit.LogOptions{From: toHash})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+
+	var msgs []string
+	err = iter.ForEach(func(c *object.Commit) error {
+		if c.Hash.String() == fromSHA {
+			return fmt.Errorf("stop") // sentinel; not a real error
+		}
+		// Use first line only (subject).
+		subject := c.Message
+		if idx := len(subject); idx > 0 {
+			for i, ch := range subject {
+				if ch == '\n' {
+					subject = subject[:i]
+					break
+				}
+			}
+		}
+		if subject != "" {
+			msgs = append(msgs, subject)
+		}
+		return nil
+	})
+	// The "stop" sentinel is expected; ignore it.
+	if err != nil && err.Error() != "stop" {
+		return msgs, nil // best-effort: return what we have
+	}
+	return msgs, nil
+}
+
+// FormatSyncCommitMessage builds a single commit message from a list of
+// Forgejo commit subjects. First message becomes the subject line; the rest
+// are listed as bullet points in the body.
+func FormatSyncCommitMessage(msgs []string) string {
+	if len(msgs) == 0 {
+		return "chore(sync): incremental sync from Forgejo"
+	}
+	if len(msgs) == 1 {
+		return msgs[0]
+	}
+	// Most recent commit is the subject; older ones are body bullets.
+	var body string
+	for i := 1; i < len(msgs); i++ {
+		body += "\n- " + msgs[i]
+	}
+	return msgs[0] + "\n" + body
+}
+
 // ChangedFiles returns per-file diffs between lastSHA and the current HEAD
 // in the Forgejo worktree at dir.
 // If lastSHA is empty, all files in HEAD are returned as additions.

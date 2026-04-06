@@ -183,8 +183,12 @@ func (r *Runner) Sync(ctx context.Context, repoName string) error {
 		run.FilesSynced++
 	}
 
+	// Build the GitHub commit message from the original Forgejo commit messages.
+	msgs, _ := CommitMessages(worktreeDir, lastSHA, currentSHA)
+	commitMsg := FormatSyncCommitMessage(msgs)
+
 	// Push all staged content to GitHub.
-	commitSHA, pushErr := r.wt.PushAllStaging(ctx, repoName, "chore(sync): sentinel incremental sync from Forgejo HEAD")
+	commitSHA, pushErr := r.wt.PushAllStaging(ctx, repoName, commitMsg)
 	if pushErr != nil {
 		slog.Error("sync: push staging failed", "repo", repoName, "err", pushErr)
 	}

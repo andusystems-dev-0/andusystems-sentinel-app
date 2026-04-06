@@ -65,9 +65,19 @@ func (m *Manager) pushFiles(ctx context.Context, repo, commitMsg string, filenam
 		}
 	}
 
+	// Use the GitHub identity for mirror commits so they show as the
+	// operator's commits, not the sentinel service account.
+	name := m.cfg.GitHub.GitName
+	email := m.cfg.GitHub.GitEmail
+	if name == "" {
+		name = m.cfg.Sentinel.GitName
+	}
+	if email == "" {
+		email = m.cfg.Sentinel.GitEmail
+	}
 	sig := &object.Signature{
-		Name:  m.cfg.Sentinel.GitName,
-		Email: m.cfg.Sentinel.GitEmail,
+		Name:  name,
+		Email: email,
 		When:  time.Now(),
 	}
 
