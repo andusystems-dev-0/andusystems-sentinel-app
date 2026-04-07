@@ -255,9 +255,6 @@ func (r *NightlyRunner) RunWithOpts(ctx context.Context, repoName string, fullSc
 		return complexityOrder(specs[i].Complexity) < complexityOrder(specs[j].Complexity)
 	})
 
-	// Filter to tasks that fit within the budget.
-	specs = r.filterByBudget(specs, budget)
-
 	slog.Info("nightly: analysis complete", "repo", repoName, "tasks", len(specs))
 	r.postProgress(ctx, fmt.Sprintf("📋 **Analysis complete** — %d tasks identified for **%s**", len(specs), repoName))
 
@@ -365,16 +362,6 @@ func (r *NightlyRunner) RunWithOpts(ctx context.Context, repoName string, fullSc
 			slog.Info("nightly: stopped during implementation phase")
 			finishSession("stopped")
 			return nil
-		}
-
-		// Budget check: enough time for this task's complexity tier?
-		elapsed := time.Since(sessionStart)
-		estimate := taskBudgetMinutes(specs[i].Complexity)
-		if int(elapsed.Minutes())+estimate > budget {
-			slog.Info("nightly: budget exhausted, skipping remaining tasks",
-				"elapsed_min", int(elapsed.Minutes()), "estimate_min", estimate, "remaining_tasks", len(tasks)-i)
-			r.postProgress(ctx, fmt.Sprintf("⏰ Budget exhausted after %d/%d tasks — stopping", i, len(tasks)))
-			break
 		}
 
 		execType := AssignExecutor(specs[i])
