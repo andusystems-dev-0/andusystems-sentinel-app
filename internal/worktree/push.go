@@ -3,6 +3,7 @@ package worktree
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"time"
 
@@ -43,6 +44,35 @@ func (m *Manager) pushFiles(ctx context.Context, repo, commitMsg string, filenam
 		return "", err
 	}
 
+	// Fetch remote so we know where origin/main is. If the remote is ahead
+	// (e.g. previous migration, direct push), a non-force push would fail
+	// with "non-fast-forward". Fetching lets us detect and handle this.
+	repoConfig := m.repoConfig(repo)
+	if repoConfig == nil {
+		return "", fmt.Errorf("repo %q not found in config", repo)
+	}
+	fetchURL := fmt.Sprintf("https://github.com/%s.git", repoConfig.GitHubPath)
+	fetchErr := r.FetchContext(ctx, &gogit.FetchOptions{
+		RemoteName: "origin",
+		Auth: &http.BasicAuth{
+			Username: m.cfg.Sentinel.GitHubUsername,
+			Password: m.cfg.GitHub.Token,
+		},
+		RemoteURL: fetchURL,
+	})
+	if fetchErr != nil && fetchErr != gogit.NoErrAlreadyUpToDate {
+		// Non-fatal: if fetch fails (e.g. empty remote), proceed anyway.
+		slog.Debug("push: fetch origin failed (may be empty remote)", "repo", repo, "err", fetchErr)
+	}
+
+	// If remote main is ahead of local, fast-forward local HEAD so our new
+	// commit builds on the latest remote state. This keeps the push linear.
+	if !force {
+		if ffErr := m.fastForwardToRemote(r, repo); ffErr != nil {
+			slog.Debug("push: fast-forward skipped", "repo", repo, "err", ffErr)
+		}
+	}
+
 	wt, err := r.Worktree()
 	if err != nil {
 		return "", err
@@ -59,8 +89,12 @@ func (m *Manager) pushFiles(ctx context.Context, repo, commitMsg string, filenam
 			if err != nil {
 				return "", err
 			}
-			if _, err := wt.Add(rel); err != nil {
+			h, err := wt.Add(rel)
+			if err != nil {
 				return "", fmt.Errorf("git add %s in %s: %w", f, repo, err)
+			}
+			if h.IsZero() {
+				return "", fmt.Errorf("git add %s in %s: file not staged (zero hash)", f, repo)
 			}
 		}
 	}
@@ -84,11 +118,6 @@ func (m *Manager) pushFiles(ctx context.Context, repo, commitMsg string, filenam
 	hash, err := wt.Commit(commitMsg, &gogit.CommitOptions{Author: sig, Committer: sig})
 	if err != nil {
 		return "", fmt.Errorf("commit staging for %s: %w", repo, err)
-	}
-
-	repoConfig := m.repoConfig(repo)
-	if repoConfig == nil {
-		return "", fmt.Errorf("repo %q not found in config", repo)
 	}
 
 	pushURL := fmt.Sprintf("https://github.com/%s.git", repoConfig.GitHubPath)
@@ -179,6 +208,47 @@ func (m *Manager) ensureGitHubRepo(ctx context.Context, repo, dir string) (*gogi
 func ResolutionCommitMsg(category, filename string, lineNumber int) string {
 	return fmt.Sprintf("chore(sync): sentinel resolved %s in %s:%d",
 		category, filepath.Base(filename), lineNumber)
+}
+
+// fastForwardToRemote fast-forwards the local main branch to match
+// origin/main. This ensures the next commit builds on the latest remote
+// state so the push is a fast-forward. Working tree files are preserved
+// (git reset --mixed keeps the worktree intact).
+func (m *Manager) fastForwardToRemote(r *gogit.Repository, repo string) error {
+	remoteRef, err := r.Reference(plumbing.NewRemoteReferenceName("origin", "main"), true)
+	if err != nil {
+		return fmt.Errorf("resolve origin/main: %w", err)
+	}
+
+	localRef, err := r.Head()
+	if err != nil {
+		// No local commits yet — nothing to fast-forward.
+		return nil
+	}
+
+	if localRef.Hash() == remoteRef.Hash() {
+		return nil // already up-to-date
+	}
+
+	// Move local HEAD to origin/main. Because this is a staging repo where
+	// all file content is written fresh by the sanitization pipeline, we do
+	// a hard reset so the index matches remote. The worktree files written
+	// by WriteGitHubStaging are still on disk and will be re-staged by the
+	// subsequent AddGlob(".").
+	wt, err := r.Worktree()
+	if err != nil {
+		return err
+	}
+	if err := wt.Reset(&gogit.ResetOptions{
+		Commit: remoteRef.Hash(),
+		Mode:   gogit.HardReset,
+	}); err != nil {
+		return fmt.Errorf("reset to origin/main: %w", err)
+	}
+
+	slog.Info("push: fast-forwarded local to origin/main",
+		"repo", repo, "sha", remoteRef.Hash().String()[:12])
+	return nil
 }
 
 // config is a convenience accessor for the config used in tests.

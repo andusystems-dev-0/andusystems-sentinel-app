@@ -156,10 +156,163 @@ The full configuration is in `config.yaml`. Key sections:
 | `claude_api` | Model, max tokens, rate limits |
 | `claude_code` | Binary path, CLI flags, task timeout |
 | `worktree` | Base path for git worktrees |
+| `digest` | Nightly digest display settings (enabled, collapse threshold) |
 | `sanitize` | Confidence thresholds, skip patterns, category reasons |
+| `allowlist` | Approved-value allowlist settings (confirmation TTL) |
 | `repos` | Per-repo configuration (paths, languages, focus areas, sync settings) |
+| `excluded_repos` | List of repo names to skip entirely |
 
 See `config.yaml.example` for the complete annotated reference.
+
+### Detailed Configuration Options
+
+#### `sentinel`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `git_name` | — | Git author name for sentinel commits |
+| `git_email` | — | Git author email for sentinel commits |
+| `forgejo_username` | — | Forgejo service account username |
+| `github_username` | — | GitHub bot username for mirror repos |
+
+#### `forgejo`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `base_url` | — | Base URL of the Forgejo instance (e.g. `https://git.andusystems.com`) |
+
+Tokens are set via environment variables (`FORGEJO_SENTINEL_TOKEN`, `FORGEJO_OPERATOR_TOKEN`).
+
+#### `github`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `base_url` | `https://api.github.com` | GitHub API base URL |
+| `org` | — | GitHub organisation for mirror repos |
+
+Token is set via `GITHUB_TOKEN` environment variable.
+
+#### `discord`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `guild_id` | — | Discord server (guild) ID |
+| `actions_channel_id` | — | Channel for interactive embeds: PR actions, migration confirmations, `/sentinel` commands |
+| `logs_channel_id` | — | Channel for informational embeds: findings, sync/migration status, errors |
+| `operator_user_ids` | `[]` | Allowlist of Discord user IDs that can approve, merge, or reject |
+
+#### `pr`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `merge_strategy` | `squash` | Default merge strategy: `squash`, `merge`, or `rebase` |
+| `high_priority_types` | `["code","fix","feat","vulnerability"]` | Task types treated as high priority |
+| `mention_on_security` | `true` | Whether to `@here` in Discord on security-related findings |
+| `mention_cooldown_minutes` | `60` | Minimum minutes between `@here` mentions per repo |
+| `housekeeping.enabled` | `true` | Enable housekeeping companion PRs |
+| `housekeeping.open_only_if_content` | `true` | Only open housekeeping PR if files actually changed |
+
+#### `nightly`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `cron` | `0 23 * * *` | Cron expression for nightly pipeline schedule |
+| `skip_if_active_dev_within_hours` | `2` | Skip nightly run if non-sentinel commits occurred in the last N hours |
+| `flood_threshold` | `5` | Maximum open sentinel PRs per repo before skipping new runs |
+
+#### `digest`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | Enable nightly digest summaries posted to Discord |
+| `low_priority_collapse_threshold` | `5` | If more than N low-priority open PRs exist, show a count instead of a full list |
+
+#### `webhook`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `port` | `8080` | HTTP listener port for incoming Forgejo webhooks |
+| `event_queue_size` | `100` | Buffered channel size for the event queue (returns 429 when full) |
+| `processing_workers` | `4` | Number of concurrent webhook processing workers |
+| `review_cooldown_minutes` | `5` | Deduplication window for PR review triggers |
+
+#### `ollama`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `host` | — | Ollama API endpoint URL |
+| `model` | `qwen2.5-coder:14b` | LLM model for analysis and sanitization |
+| `temperature` | `0.1` | Sampling temperature |
+| `context_window` | `16384` | Model context window size in tokens |
+| `response_buffer_tokens` | `2048` | Tokens reserved for LLM response (subtracted from context window for input) |
+
+#### `claude_api`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `model` | `[AI_ASSISTANT]-sonnet-4-6` | [AI_ASSISTANT] model ID for Layer 3 sanitization |
+| `max_tokens` | `8192` | Maximum response tokens per API call |
+| `rpm_limit` | `50` | Requests per minute rate limit |
+| `rate_limit_buffer_ms` | `200` | Minimum milliseconds between API calls |
+
+API key is set via `ANTHROPIC_API_KEY` environment variable.
+
+#### `claude_code`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `binary_path` | `/usr/local/bin/[AI_ASSISTANT]` | Path to the [AI_ASSISTANT] Code CLI binary |
+| `flags` | `["--output-format=json","--dangerously-skip-permissions"]` | CLI flags passed to every invocation |
+| `task_timeout_minutes` | `30` | Maximum minutes per [AI_ASSISTANT] Code task before timeout |
+
+#### `worktree`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `base_path` | `/data/workspace` | Base directory for git worktrees (PVC mount point in Kubernetes) |
+
+#### `sanitize`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `high_confidence_threshold` | `0.9` | Findings at or above this confidence are auto-redacted (Layer 1) |
+| `medium_confidence_threshold` | `0.6` | Findings at or above this confidence go to operator review |
+| `skip_patterns` | `["*.test","testdata/**","fixtures/**","*.example"]` | Glob patterns for files excluded from sanitization |
+| `category_reasons` | *(see below)* | Map of category → reason string used in `SENTINEL BOT` redaction tags |
+
+Built-in categories: `SECRET`, `API_KEY`, `PASSWORD`, `PRIVATE_KEY`, `CONNECTION_STRING`, `INTERNAL_URL`. Reason strings must not contain `>` (validated at startup).
+
+#### `allowlist`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `confirmation_ttl_minutes` | `10` | TTL for allowlist confirmation prompts before they expire |
+
+#### `repos`
+
+Each entry in the `repos` list configures a monitored repository:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `name` | — | Short name used in CLI flags (`--repo`) and Discord labels |
+| `forgejo_path` | — | Forgejo `owner/repo` path |
+| `github_path` | — | GitHub `owner/repo` mirror path |
+| `languages` | `[]` | Languages in the repo (used by LLM for analysis context) |
+| `focus_areas` | `[]` | Areas to prioritise in nightly analysis (e.g. `security`, `performance`) |
+| `max_tasks_per_run` | `10` | Maximum tasks created per nightly run |
+| `merge_strategy` | *(global `pr.merge_strategy`)* | Per-repo merge strategy override |
+| `sync_enabled` | `false` | Whether Mode 3 sync is active for this repo |
+| `excluded` | `false` | If `true`, skip this repo entirely |
+
+#### `excluded_repos`
+
+A top-level list of repo names to skip entirely (alternative to setting `excluded: true` per repo):
+
+```yaml
+excluded_repos:
+  - "legacy-app"
+  - "archived-service"
+```
 
 ## Sanitization Pipeline
 

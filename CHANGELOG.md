@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- README.md: Added detailed per-option configuration reference covering all config.yaml sections
+- README.md: Added missing `digest`, `allowlist`, and `excluded_repos` sections to config summary table
+
 ### Added
 - GitHub identity configuration and commit message formatting for sync operations
 - GitHub description synchronization to doc-gen command
