@@ -22,7 +22,7 @@ type layer2LLM struct {
 
 func newLayer2LLM(llm types.LLMClient, fallback types.ClaudeAPIClient, timeout time.Duration) *layer2LLM {
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = 45 * time.Second
 	}
 	return &layer2LLM{llm: llm, fallback: fallback, timeout: timeout}
 }

@@ -12,6 +12,14 @@ import (
 	"github.com/andusystems/sentinel/internal/types"
 )
 
+// NightlyController allows the bot to trigger and stop nightly sessions.
+type NightlyController interface {
+	Stop()
+	RunAll(ctx context.Context) error
+	Run(ctx context.Context, repo string) error
+	RunFull(ctx context.Context, repo string) error
+}
+
 // Bot implements types.DiscordBot. It owns the Discord gateway session.
 type Bot struct {
 	session         *discordgo.Session
@@ -19,12 +27,18 @@ type Bot struct {
 	findingHandlers map[string]types.ReactionHandler
 	prHandlers      map[string]types.ReactionHandler
 	confirmations   *store.ConfirmationStore
+	nightlyRunner   NightlyController
 }
 
 // SetConfirmationStore injects the confirmation store so the bot can resolve
 // ✅/❌ reactions in the command channel.
 func (b *Bot) SetConfirmationStore(s *store.ConfirmationStore) {
 	b.confirmations = s
+}
+
+// SetNightlyRunner injects the nightly runner for run/stop command support.
+func (b *Bot) SetNightlyRunner(nr NightlyController) {
+	b.nightlyRunner = nr
 }
 
 // NewBot creates a Discord bot but does not connect yet. Call Start to connect.
@@ -74,10 +88,10 @@ func (b *Bot) Stop() error {
 	return b.session.Close()
 }
 
-// PostFinding posts a sanitization finding embed to the findings channel.
+// PostFinding posts a sanitization finding embed to the logs channel.
 func (b *Bot) PostFinding(_ context.Context, r types.PendingResolution, f types.SanitizationFinding) (string, error) {
 	embed := BuildFindingEmbed(r, f)
-	msg, err := b.session.ChannelMessageSendEmbed(b.cfg.Discord.FindingsChannelID, embed)
+	msg, err := b.session.ChannelMessageSendEmbed(b.cfg.Discord.LogsChannelID, embed)
 	if err != nil {
 		return "", fmt.Errorf("post finding embed: %w", err)
 	}
@@ -161,10 +175,10 @@ func (b *Bot) PostInThread(_ context.Context, threadID, content string) error {
 	return err
 }
 
-// PostNightlyDigest posts the nightly digest embed to the PR channel.
+// PostNightlyDigest posts the nightly digest embed to the actions channel.
 func (b *Bot) PostNightlyDigest(_ context.Context, digest types.NightlyDigest) error {
 	embed := BuildDigestEmbed(digest, b.cfg.Digest.LowPriorityCollapseThreshold)
-	_, err := b.session.ChannelMessageSendEmbed(b.cfg.Discord.PRChannelID, embed)
+	_, err := b.session.ChannelMessageSendEmbed(b.cfg.Discord.ActionsChannelID, embed)
 	return err
 }
 
@@ -180,8 +194,8 @@ func (b *Bot) onReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAd
 	ctx := context.Background()
 	emoji := r.Emoji.Name
 
-	// Try finding handlers first (findings channel).
-	if r.ChannelID == b.cfg.Discord.FindingsChannelID {
+	// Logs channel: finding reactions (✅/❌/🔍/✏️).
+	if r.ChannelID == b.cfg.Discord.LogsChannelID {
 		if h, ok := b.findingHandlers[emoji]; ok {
 			if err := h.Handle(ctx, r.MessageID, r.UserID); err != nil {
 				slog.Error("finding reaction handler error", "emoji", emoji, "err", err)
@@ -190,35 +204,25 @@ func (b *Bot) onReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAd
 		return
 	}
 
-	// PR channel reactions.
-	if r.ChannelID == b.cfg.Discord.PRChannelID {
+	// Actions channel: PR reactions (✅/❌/💬) and confirmation reactions (✅/❌).
+	if r.ChannelID == b.cfg.Discord.ActionsChannelID {
+		// Try PR handlers first.
 		if h, ok := b.prHandlers[emoji]; ok {
 			if err := h.Handle(ctx, r.MessageID, r.UserID); err != nil {
 				slog.Error("PR reaction handler error", "emoji", emoji, "err", err)
 			}
 		}
+		// Try confirmation handlers (migration confirm/reject).
+		// SetStatusByMessageID is a no-op if the message is not a confirmation.
+		if b.confirmations != nil && b.IsOperator(r.UserID) {
+			switch emoji {
+			case "✅":
+				b.confirmations.SetStatusByMessageID(ctx, r.MessageID, "confirmed")
+			case "❌":
+				b.confirmations.SetStatusByMessageID(ctx, r.MessageID, "rejected")
+			}
+		}
 		return
-	}
-
-	// Command channel: resolve pending confirmations via ✅/❌.
-	slog.Info("reaction received", "channel", r.ChannelID, "emoji", emoji, "user", r.UserID, "cmd_channel", b.cfg.Discord.CommandChannelID)
-	if r.ChannelID == b.cfg.Discord.CommandChannelID && b.confirmations != nil {
-		slog.Info("reaction in command channel", "is_operator", b.IsOperator(r.UserID))
-		if !b.IsOperator(r.UserID) {
-			return
-		}
-		switch emoji {
-		case "✅":
-			if err := b.confirmations.SetStatusByMessageID(ctx, r.MessageID, "confirmed"); err != nil {
-				slog.Error("confirm: set confirmed", "err", err)
-			} else {
-				slog.Info("force migration confirmed", "message_id", r.MessageID, "user", r.UserID)
-			}
-		case "❌":
-			if err := b.confirmations.SetStatusByMessageID(ctx, r.MessageID, "rejected"); err != nil {
-				slog.Error("confirm: set rejected", "err", err)
-			}
-		}
 	}
 }
 
@@ -227,7 +231,7 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 	if m.Author.ID == s.State.User.ID {
 		return
 	}
-	if m.ChannelID != b.cfg.Discord.CommandChannelID {
+	if m.ChannelID != b.cfg.Discord.ActionsChannelID {
 		return
 	}
 	// Command parsing is handled by commands.go dispatcher.
