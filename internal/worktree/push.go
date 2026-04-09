@@ -89,12 +89,8 @@ func (m *Manager) pushFiles(ctx context.Context, repo, commitMsg string, filenam
 			if err != nil {
 				return "", err
 			}
-			h, err := wt.Add(rel)
-			if err != nil {
+			if _, err := wt.Add(rel); err != nil {
 				return "", fmt.Errorf("git add %s in %s: %w", f, repo, err)
-			}
-			if h.IsZero() {
-				return "", fmt.Errorf("git add %s in %s: file not staged (zero hash)", f, repo)
 			}
 		}
 	}

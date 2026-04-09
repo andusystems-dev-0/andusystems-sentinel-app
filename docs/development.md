@@ -9,6 +9,7 @@
 | **golangci-lint** | Latest | For `make lint` |
 | **Helm** | 3.x | For `make helm-lint` and Kubernetes deployment |
 | **Docker** | Any recent version | For container builds |
+| **Node.js / npm** | Latest LTS | For web dashboard development (`make web-build`, `make web-dev`) |
 
 ### Runtime Dependencies (for full functionality)
 
@@ -18,35 +19,37 @@
 | **GitHub** | Mirror target; PAT with `repo` scope |
 | **Discord** | Operator interface; bot with message content + reaction intents |
 | **Ollama** | Local LLM; requires `qwen2.5-coder:14b` model pulled |
-| **[AI_ASSISTANT] Code CLI** | Optional; enables execution of fix/feat/vulnerability/refactor tasks |
+| **[AI_ASSISTANT] Code CLI** | Optional; enables execution of fix/feat/vulnerability/refactor tasks, sanitization Layer 3, and documentation generation |
 
 ## Project Structure
 
 ```
-cmd/sentinel/main.go        — Entry point: config, DB init, mode dispatch, cron, HTTP server
+cmd/sentinel/main.go        -- Entry point: config, DB init, mode dispatch, cron, HTTP server
+web/                         -- SvelteKit dashboard source (embedded into Go binary)
 internal/
-  config/                   — Config struct, YAML unmarshaling, env var injection, validation
-  types/                    — All data models and interface contracts
-  store/                    — SQLite layer; one file per table group; migrations
-  webhook/                  — HTTP server, HMAC validation, buffered queue, worker pool
-  forge/                    — Forgejo (Gitea SDK) + GitHub (go-github) API clients
-  llm/                      — Ollama client, batcher, prompt loading, semaphore
-  sanitize/                 — Three-layer sanitization pipeline
-  executor/                 — [AI_ASSISTANT] Code CLI invocation via os/exec
-  pipeline/                 — Mode 1 nightly orchestration
-  sync/                     — Mode 3 incremental sync
-  migration/                — Mode 4 full-repo migration
-  reconcile/                — Drift detection and auto-bootstrap
-  discord/                  — Discord bot: embeds, reactions, threads, digest, commands
-  prnotify/                 — PR notifications, reaction handlers, Forgejo→Discord sync
-  worktree/                 — Git worktree lifecycle, per-repo locking, token_index
-  [AI_ASSISTANT]/                   — [AI_ASSISTANT] Code CLI wrapper
-  docs/                     — Documentation generation and changelog
-prompts/                    — LLM role prompts (Roles A through G)
-fixtures/                   — Test data: webhook payloads, diffs, synthetic secrets
-tools/                      — CLI test harnesses referenced by Makefile
-charts/sentinel/            — Helm chart (Kubernetes deployment)
-argocd/                     — ArgoCD Application manifest
+  api/                      -- REST API server, SSE event bus, SPA handler
+  config/                   -- Config struct, YAML unmarshaling, env var injection, validation
+  types/                    -- All data models and interface contracts
+  store/                    -- SQLite layer; one file per table group; migrations
+  webhook/                  -- HTTP server, HMAC validation, buffered queue, worker pool
+  forge/                    -- Forgejo (Gitea SDK) + GitHub (go-github) API clients
+  llm/                      -- Ollama client, batcher, prompt loading, semaphore
+  sanitize/                 -- Three-layer sanitization pipeline
+  executor/                 -- [AI_ASSISTANT] Code CLI invocation via os/exec; prompt templating
+  pipeline/                 -- Mode 1 nightly orchestration (preflight, routing, dependencies)
+  sync/                     -- Mode 3 incremental sync
+  migration/                -- Mode 4 full-repo migration with auto-bootstrap
+  reconcile/                -- Drift detection and periodic sync
+  discord/                  -- Discord bot: embeds, reactions, threads, digest, commands
+  prnotify/                 -- PR notifications, reaction handlers, Forgejo->Discord sync
+  worktree/                 -- Git worktree lifecycle, per-repo locking, token_index
+  [AI_ASSISTANT]/                   -- [AI_ASSISTANT] Code CLI wrapper
+  docs/                     -- Documentation generation, changelog, Obsidian vault integration
+prompts/                    -- LLM role prompts (Roles A through G)
+fixtures/                   -- Test data: webhook payloads, diffs, synthetic secrets
+tools/                      -- CLI test harnesses referenced by Makefile
+charts/sentinel/            -- Helm chart (Kubernetes deployment)
+argocd/                     -- ArgoCD Application manifest
 ```
 
 ## Local Development Setup
@@ -94,11 +97,33 @@ make run
 ./bin/sentinel --config config.yaml
 ```
 
+### 5. Web Dashboard Development
+
+```bash
+# Install frontend dependencies
+make web-install
+
+# Start SvelteKit dev server with hot reload
+make web-dev
+
+# Build production assets (embedded into Go binary)
+make web-build
+
+# Full build: web assets + Go binary
+make full-build
+```
+
+The SvelteKit dev server proxies API requests to the Go server on the webhook listener port.
+
 ## Build Commands
 
 | Command | Description |
 |---------|-------------|
-| `make build` | Compile `./bin/sentinel` |
+| `make build` | Compile `./bin/sentinel` (embeds SPA if pre-built) |
+| `make web-install` | Install web dashboard npm dependencies |
+| `make web-build` | Build SvelteKit SPA to `web/build/` |
+| `make web-dev` | Run SvelteKit dev server with hot reload |
+| `make full-build` | Build web assets, then compile Go binary with embedded SPA |
 | `make run` | Run daemon with `config.yaml` |
 | `make dry-run REPO=<name>` | Analysis only; no PRs or GitHub pushes |
 | `make docker-build` | Build Docker image tagged with git SHA |
@@ -123,8 +148,8 @@ These use CLI tools in `tools/` to exercise specific subsystems:
 | `make webhook-test` | Send fixture webhook payload to local server |
 | `make llm-test` | Send fixture diff to Ollama, print TaskSpec JSON |
 | `make discord-test` | Connect bot, post synthetic notification, verify reactions |
-| `make reaction-test` | Simulate finding reactions (✅/❌/🔍/✏️) |
-| `make pr-reaction-test` | Simulate PR reactions (✅/❌/💬) + Forgejo webhook sync |
+| `make reaction-test` | Simulate finding reactions |
+| `make pr-reaction-test` | Simulate PR reactions + Forgejo webhook sync |
 | `make forgejo-sync-test` | Simulate Forgejo merge/close events, verify Discord embed |
 | `make [AI_ASSISTANT]-api-test` | Send fixture to [AI_ASSISTANT] API sanitization layer, print findings |
 
@@ -156,27 +181,38 @@ These use CLI tools in `tools/` to exercise specific subsystems:
 | `SENTINEL_DB_PATH` | `/data/db/sentinel.db` | SQLite database file path |
 | `SENTINEL_INGRESS_HOST` | (empty) | If set, auto-registers Forgejo webhooks on all repos at startup |
 
-Config resolution order: YAML file → environment variable override. See `internal/config/env.go` for the field-by-field mapping.
+Config resolution order: YAML file -> environment variable override. See `internal/config/env.go` for the field-by-field mapping.
 
 ## Discord Bot Setup
 
-1. Create a new application at [discord.com/developers/applications](https://discord.com/developers/applications)
+1. Create a new application at the Discord Developer Portal
 2. Under **Bot**, enable privileged intents: `Message Content Intent`, `Server Members Intent`
-3. Under **OAuth2 → URL Generator**, select scopes `bot` + `applications.commands` with permissions:
+3. Under **OAuth2 -> URL Generator**, select scopes `bot` + `applications.commands` with permissions:
    - Send Messages
    - Add Reactions
    - Create Public Threads
    - Read Message History
 4. Invite the bot to your server using the generated URL
-5. Create three channels (e.g. `#sentinel-prs`, `#sentinel-findings`, `#sentinel-commands`)
+5. Create channels for PR notifications, findings/logs, and commands
 6. Copy channel IDs and your Discord user ID into `config.yaml`
+
+### Discord Channel Layout
+
+| Channel | Config Field | Purpose |
+|---------|-------------|---------|
+| **Actions** | `actions_channel_id` | Interactive: migration confirmations, `/sentinel` commands |
+| **PRs** | `pr_channel_id` | PR embeds with merge/close/discuss reactions |
+| **Logs** | `logs_channel_id` | Finding embeds, sync/migration status, errors |
+| **Git Logs** | `git_logs_channel_id` | Git operation logs |
+
+If `pr_channel_id` is not set, PR notifications fall back to the actions channel.
 
 ## Forgejo Account Setup
 
 The `sentinel` service account needs per-repo permissions:
 - **Read:** code, issues, pull requests
 - **Write:** issues, pull requests (to open PRs and post comments)
-- **No merge permission** — enforced at the Forgejo role level
+- **No merge permission** -- enforced at the Forgejo role level
 
 The operator token (for merging) should belong to a separate account or be a personal token with merge permission.
 
@@ -221,7 +257,7 @@ Sync is **manual only**. Sentinel has side effects on Forgejo, GitHub, and Disco
 
 1. Generate the new token
 2. Update the environment variable (or Kubernetes Secret)
-3. Restart sentinel — tokens are read at startup only
+3. Restart sentinel -- tokens are read at startup only
 4. Revoke the old token
 
 For `FORGEJO_WEBHOOK_SECRET`: update both the Kubernetes Secret and the webhook settings in each Forgejo repo.
@@ -243,10 +279,15 @@ For `FORGEJO_WEBHOOK_SECRET`: update both the Kubernetes Secret and the webhook 
 4. Add test fixtures in `fixtures/`
 5. Update `config.yaml.example` `high_priority_types` comment if relevant
 
+## Adding a New API Endpoint
+
+1. Add the handler method to `internal/api/handlers.go`
+2. Register the route in `internal/api/server.go:RegisterRoutes`
+3. If it needs real-time updates, publish events via `EventBus.Publish` in the relevant subsystem
+
 ## Known Stubs
 
 These exist in the codebase but are not fully wired:
 
-- **`sanitize/layer3_claude.go`** — [AI_ASSISTANT] API client is stubbed. Layer 3 is a no-op even when `ANTHROPIC_API_KEY` is set.
-- **Push event dispatch** — push events are logged but sentinel-branch-push detection path is incomplete.
-- **LLM Roles E, F, G** — Thread Q&A and housekeeping PR generation are partially stubbed. Basic posting works; full back-and-forth Q&A may not.
+- **Push event dispatch** -- push events are logged but sentinel-branch-push detection path is incomplete for some edge cases.
+- **LLM Roles E, F, G** -- Thread Q&A and housekeeping PR generation are partially stubbed. Basic posting works; full back-and-forth Q&A may not.

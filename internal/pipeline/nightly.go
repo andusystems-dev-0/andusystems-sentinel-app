@@ -128,6 +128,19 @@ func (r *NightlyRunner) RunAll(ctx context.Context) error {
 	return nil
 }
 
+// RunAllFull runs a full-scan nightly pipeline for all non-excluded repos sequentially.
+func (r *NightlyRunner) RunAllFull(ctx context.Context) error {
+	for _, repo := range r.cfg.Repos {
+		if repo.Excluded || !repo.SyncEnabled {
+			continue
+		}
+		if err := r.RunFull(ctx, repo.Name); err != nil {
+			slog.Error("nightly full run failed", "repo", repo.Name, "err", err)
+		}
+	}
+	return nil
+}
+
 // Run executes the nightly pipeline for a single repo (incremental — only
 // files changed since last sync SHA).
 func (r *NightlyRunner) Run(ctx context.Context, repoName string) error {

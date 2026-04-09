@@ -16,6 +16,7 @@ import (
 type NightlyController interface {
 	Stop()
 	RunAll(ctx context.Context) error
+	RunAllFull(ctx context.Context) error
 	Run(ctx context.Context, repo string) error
 	RunFull(ctx context.Context, repo string) error
 }

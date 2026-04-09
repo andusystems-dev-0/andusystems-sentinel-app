@@ -73,6 +73,7 @@ func handleCommand(ctx context.Context, bot *Bot, message, userID, channelID str
 			return
 		}
 		// /sentinel run              → incremental run on all repos
+		// /sentinel run full         → full scan on all repos
 		// /sentinel run <repo>       → incremental run on one repo
 		// /sentinel run <repo> full  → full scan on one repo
 		if len(args) == 0 {
@@ -80,6 +81,13 @@ func handleCommand(ctx context.Context, bot *Bot, message, userID, channelID str
 			go func() {
 				if err := bot.nightlyRunner.RunAll(ctx); err != nil {
 					slog.Error("manual nightly run failed", "err", err)
+				}
+			}()
+		} else if args[0] == "full" && len(args) == 1 {
+			bot.PostChannelMessage(ctx, channelID, "🌙 Full nightly scan started for **all repos**.")
+			go func() {
+				if err := bot.nightlyRunner.RunAllFull(ctx); err != nil {
+					slog.Error("manual nightly full run failed", "err", err)
 				}
 			}()
 		} else {
@@ -117,6 +125,7 @@ func usage() string {
 		"/sentinel migrate <repo> --force  — Force re-migration\n" +
 		"/sentinel sync <repo>         — Run Mode 3 incremental sync\n" +
 		"/sentinel run                 — Incremental nightly on all repos\n" +
+		"/sentinel run full            — Full scan nightly on all repos\n" +
 		"/sentinel run <repo>          — Incremental nightly on one repo\n" +
 		"/sentinel run <repo> full     — Full scan nightly on one repo\n" +
 		"/sentinel help                — Show this help\n" +
