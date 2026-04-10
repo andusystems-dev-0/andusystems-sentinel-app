@@ -25,8 +25,24 @@ func (m *Manager) PushStagingFile(ctx context.Context, repo, filename, commitMsg
 
 // PushAllStaging commits and pushes all staged changes in the GitHub staging
 // worktree as a single squashed commit. Returns the commit SHA on success.
+//
+// WARNING: this uses go-git's AddGlob(".") which removes index entries for
+// any file not present on disk. Because the staging worktree only ever has
+// the freshly-written file subset (not all of origin/main), AddGlob(".")
+// will silently delete every other file from the GitHub mirror. Sync mode 3
+// must use PushStagingFiles instead. AddGlob is only safe in Mode 4 initial
+// migration where the staging worktree is a complete copy of the source.
 func (m *Manager) PushAllStaging(ctx context.Context, repo, commitMsg string) (string, error) {
 	return m.pushFiles(ctx, repo, commitMsg, nil, false) // nil = add all, no force
+}
+
+// PushStagingFiles commits and pushes only the named files from the GitHub
+// staging worktree as a single commit. The per-file `wt.Add` path is taken,
+// which leaves index entries for other files (inherited from origin/main
+// after fast-forward) untouched. Use this from Mode 3 sync where staging
+// only contains the changed files, not the full tree.
+func (m *Manager) PushStagingFiles(ctx context.Context, repo, commitMsg string, filenames []string) (string, error) {
+	return m.pushFiles(ctx, repo, commitMsg, filenames, false)
 }
 
 // PushAllStagingInitial commits all staged content as a single commit and
@@ -218,26 +234,47 @@ func (m *Manager) fastForwardToRemote(r *gogit.Repository, repo string) error {
 
 	localRef, err := r.Head()
 	if err != nil {
-		// No local commits yet — nothing to fast-forward.
-		return nil
-	}
-
-	if localRef.Hash() == remoteRef.Hash() {
+		// Local has no HEAD: PlainInit was just called on a previously
+		// missing/empty staging dir, so refs/heads/main is unborn. Point
+		// it at origin/main so the next commit lands as a fast-forward
+		// child instead of an orphan branch (which the GitHub side would
+		// reject as non-fast-forward). Fall through to the mixed reset
+		// below so the index also reflects origin/main's tree, allowing
+		// the next AddGlob to stage the worktree as a delta against the
+		// remote rather than as a from-scratch tree.
+		branchRef := plumbing.NewHashReference(
+			plumbing.NewBranchReferenceName("main"),
+			remoteRef.Hash())
+		if err := r.Storer.SetReference(branchRef); err != nil {
+			return fmt.Errorf("set unborn local main to origin/main: %w", err)
+		}
+		slog.Info("push: adopted origin/main as new local main",
+			"repo", repo, "sha", remoteRef.Hash().String()[:12])
+		// Fall through to mixed reset so the index matches origin/main.
+	} else if localRef.Hash() == remoteRef.Hash() {
 		return nil // already up-to-date
 	}
 
-	// Move local HEAD to origin/main. Because this is a staging repo where
-	// all file content is written fresh by the sanitization pipeline, we do
-	// a hard reset so the index matches remote. The worktree files written
-	// by WriteGitHubStaging are still on disk and will be re-staged by the
-	// subsequent AddGlob(".").
+	// Move local HEAD + index to origin/main, but LEAVE the working tree
+	// untouched. The freshly-written staging files from WriteGitHubStaging
+	// are already on disk and must survive into the subsequent AddGlob(".").
+	//
+	// HardReset is wrong here: if a previous failed push left a local commit
+	// that tracked a file (e.g. .github/workflows/*.yml when the PAT lacked
+	// `workflow` scope), git considers that file tracked at old HEAD. A
+	// hard-reset to a remote that doesn't have the file deletes it from the
+	// worktree even though we just wrote fresh content there a few lines
+	// earlier in the runner. AddGlob then sees nothing to stage and we
+	// commit/push an EMPTY commit with the right subject — silently dropping
+	// the file. MixedReset preserves the worktree, so the next AddGlob
+	// re-stages everything we wrote.
 	wt, err := r.Worktree()
 	if err != nil {
 		return err
 	}
 	if err := wt.Reset(&gogit.ResetOptions{
 		Commit: remoteRef.Hash(),
-		Mode:   gogit.HardReset,
+		Mode:   gogit.MixedReset,
 	}); err != nil {
 		return fmt.Errorf("reset to origin/main: %w", err)
 	}

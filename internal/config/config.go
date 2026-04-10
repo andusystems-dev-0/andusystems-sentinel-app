@@ -36,6 +36,12 @@ type SentinelConfig struct {
 	GitEmail        string `yaml:"git_email"`
 	ForgejoUsername string `yaml:"forgejo_username"`
 	GitHubUsername  string `yaml:"github_username"`
+	// LocalCheckoutBase is the directory containing the operator's working
+	// clones (one subdirectory per repo). After sentinel merges a docs PR,
+	// it fast-forwards <LocalCheckoutBase>/<repo> from its forgejo remote so
+	// the operator's next push does not overwrite the generated docs.
+	// Empty string disables the feature.
+	LocalCheckoutBase string `yaml:"local_checkout_base"`
 }
 
 type ForgejoConfig struct {

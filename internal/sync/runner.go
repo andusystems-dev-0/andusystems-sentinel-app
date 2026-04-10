@@ -91,6 +91,14 @@ func (r *Runner) Sync(ctx context.Context, repoName string) error {
 		return fmt.Errorf("changed files: %w", err)
 	}
 
+	// Track which files we wrote to staging during this run so we can pass
+	// them explicitly to the push step. The push must NOT use AddGlob(".")
+	// because go-git's AddGlob removes index entries for files not present
+	// on disk — and the staging worktree only contains the files we just
+	// wrote (a small subset of origin/main's tree). Without this, every
+	// push silently deletes every other file from the GitHub mirror.
+	var changedFiles []string
+
 	// Process each changed file.
 	for _, diff := range diffs {
 		if r.isSkipPattern(diff.Filename) {
@@ -104,6 +112,7 @@ func (r *Runner) Sync(ctx context.Context, repoName string) error {
 			content, err := r.wt.ReadForgejoFile(ctx, repoName, diff.Filename)
 			if err == nil {
 				r.wt.WriteGitHubStaging(ctx, repoName, diff.Filename, content)
+				changedFiles = append(changedFiles, diff.Filename)
 			}
 			continue
 		}
@@ -130,6 +139,7 @@ func (r *Runner) Sync(ctx context.Context, repoName string) error {
 
 		// Write sanitized content to GitHub staging.
 		r.wt.WriteGitHubStaging(ctx, repoName, diff.Filename, result.SanitizedContent)
+		changedFiles = append(changedFiles, diff.Filename)
 
 		// Process findings.
 		for _, f := range result.Findings {
@@ -148,7 +158,7 @@ func (r *Runner) Sync(ctx context.Context, repoName string) error {
 					SyncRunID:            run.ID,
 					SuggestedReplacement: f.SuggestedReplacement,
 					Status:               types.StatusPending,
-					DiscordChannelID:     r.cfg.Discord.FindingsChannelID,
+					DiscordChannelID:     r.cfg.Discord.LogsChannelID,
 				}
 
 				r.db.Resolutions.Create(ctx, resolution)
@@ -161,7 +171,7 @@ func (r *Runner) Sync(ctx context.Context, repoName string) error {
 
 				// Update resolution with message ID.
 				resolution.DiscordMessageID = msgID
-				r.discord.SeedFindingReactions(ctx, r.cfg.Discord.FindingsChannelID, msgID)
+				r.discord.SeedFindingReactions(ctx, r.cfg.Discord.LogsChannelID, msgID)
 
 				issueNum, _ := r.forge.CreateIssue(ctx, repoName, types.IssueOptions{
 					Title: fmt.Sprintf("[Sentinel] %s finding in %s:%d", f.Category, filepath.Base(diff.Filename), f.LineNumber),
@@ -187,8 +197,10 @@ func (r *Runner) Sync(ctx context.Context, repoName string) error {
 	msgs, _ := CommitMessages(worktreeDir, lastSHA, currentSHA)
 	commitMsg := FormatSyncCommitMessage(msgs)
 
-	// Push all staged content to GitHub.
-	commitSHA, pushErr := r.wt.PushAllStaging(ctx, repoName, commitMsg)
+	// Push only the files we wrote during this run. Passing the explicit
+	// list keeps go-git on the per-file `wt.Add(rel)` path, which preserves
+	// index entries for unchanged files inherited from origin/main.
+	commitSHA, pushErr := r.wt.PushStagingFiles(ctx, repoName, commitMsg, changedFiles)
 	if pushErr != nil {
 		slog.Error("sync: push staging failed", "repo", repoName, "err", pushErr)
 	}
@@ -201,20 +213,32 @@ func (r *Runner) Sync(ctx context.Context, repoName string) error {
 
 	now := time.Now()
 	run.CompletedAt = &now
-	if run.FindingsMedium+run.FindingsLow > 0 {
+	if pushErr != nil {
+		run.Status = "push_failed"
+	} else if run.FindingsMedium+run.FindingsLow > 0 {
 		run.Status = "complete_with_pending"
 	} else {
 		run.Status = "complete"
 	}
 	r.db.SyncRuns.Update(ctx, run)
 
-	commitLink := r.githubCommitURL(repoName, commitSHA)
-	msg := fmt.Sprintf("✅ Sync complete for **%s**: %d files synced, %d pending findings",
-		repoName, run.FilesSynced, run.FindingsMedium+run.FindingsLow)
-	if commitLink != "" {
-		msg += "\n" + commitLink
+	gitCh := r.cfg.Discord.GitLogsChannelID
+	if gitCh == "" {
+		gitCh = r.cfg.Discord.LogsChannelID // fallback
 	}
-	r.discord.PostChannelMessage(ctx, r.cfg.Discord.FindingsChannelID, msg)
+	if pushErr != nil {
+		msg := fmt.Sprintf("⚠️ Sync for **%s**: %d files sanitized but GitHub push failed\n```\n%v\n```",
+			repoName, run.FilesSynced, pushErr)
+		r.discord.PostChannelMessage(ctx, gitCh, msg)
+	} else {
+		commitLink := r.githubCommitURL(repoName, commitSHA)
+		msg := fmt.Sprintf("✅ Sync complete for **%s**: %d files synced, %d pending findings",
+			repoName, run.FilesSynced, run.FindingsMedium+run.FindingsLow)
+		if commitLink != "" {
+			msg += "\n" + commitLink
+		}
+		r.discord.PostChannelMessage(ctx, gitCh, msg)
+	}
 
 	r.db.Actions.Log(ctx, "mode3_sync_complete", repoName, run.ID,
 		fmt.Sprintf(`{"files_synced":%d,"findings_high":%d,"findings_medium":%d,"findings_low":%d}`,

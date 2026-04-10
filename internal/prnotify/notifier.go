@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/andusystems/sentinel/internal/config"
@@ -116,7 +117,26 @@ func (n *Notifier) HandleApprove(ctx context.Context, pr *types.SentinelPR, user
 
 	n.actions.Log(ctx, "pr_merged", pr.Repo, pr.ID,
 		fmt.Sprintf(`{"pr_number":%d,"merged_by":"%s"}`, pr.PRNumber, userID))
+
+	// Refresh the operator's local working clone for docs PRs so that the
+	// next push from /home/admin/andusystems/<repo> cannot accidentally
+	// overwrite the documentation we just merged.
+	if isDocsPR(pr) {
+		pullLocalCheckout(ctx, n.cfg.Sentinel.LocalCheckoutBase, pr.Repo)
+	}
 	return nil
+}
+
+// isDocsPR returns true if pr was opened by the doc-gen pipeline.
+// Identified by either the explicit PR type or the sentinel/docs/ branch prefix.
+func isDocsPR(pr *types.SentinelPR) bool {
+	if pr == nil {
+		return false
+	}
+	if pr.PRType == "docs" {
+		return true
+	}
+	return strings.HasPrefix(pr.Branch, "sentinel/docs/")
 }
 
 // HandleClose processes ❌ on a PR message: closes via sentinel token.
@@ -188,6 +208,9 @@ func (n *Notifier) HandleForgejoResolution(ctx context.Context, repo string, prN
 			fmt.Sprintf("✅ **PR #%d** merged in **%s** — `%s` → `main` · via Forgejo UI · %s\n*GitHub mirror will sync shortly.*",
 				prNumber, repo, pr.Branch, ts))
 		n.actions.Log(ctx, "forgejo_sync_merged", repo, pr.ID, fmt.Sprintf(`{"pr_number":%d}`, prNumber))
+		if isDocsPR(pr) {
+			pullLocalCheckout(ctx, n.cfg.Sentinel.LocalCheckoutBase, repo)
+		}
 	} else {
 		n.prStore.MarkClosed(ctx, pr.ID, "forgejo-ui")
 		n.bot.EditPRFooter(ctx, pr.DiscordChannelID, pr.DiscordMessageID,
