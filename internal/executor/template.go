@@ -147,7 +147,7 @@ terminology, architecture descriptions, and operational details.
 {{- end}}
 
 ## Requirements per target
-- **README.md** — Project overview, purpose, quick-start, configuration reference, architecture summary, links to further docs.
+- **README.md** — Repo front door. **Format is strict — see "README.md format spec" below. Follow it exactly.**
 - **docs/architecture.md** — Component diagram (ASCII), data flows, key design decisions, invariants, concurrency model.
 - **docs/development.md** — Prerequisites, build commands, test commands, local dev setup, environment variables.
 - **docs/api.md** — All HTTP endpoints or exported interfaces; request/response shapes; auth model. Omit if no public API.
@@ -155,6 +155,126 @@ terminology, architecture descriptions, and operational details.
 - Any other target: write the most appropriate documentation for its name/path.
 
 Write in Markdown. Be thorough but concise. Prefer tables for config/env references.
+
+## README.md format spec — REQUIRED
+
+The README is the repo's front door. Every andusystems repo must use the same
+section headers in the same order so a reader can jump between repos without
+re-learning the layout. Target reading time: 3-5 minutes.
+
+**Hard constraints:**
+- Total length: 150-250 lines of Markdown source. If you would exceed 250,
+  move depth into docs/architecture.md or docs/development.md and link out.
+- Use the section headers and order from the skeleton below EXACTLY. Do not
+  rename, reorder, or add new top-level sections.
+- If a section does not apply to this repo, OMIT the entire section. Never
+  write "N/A", "TBD", or leave an empty heading.
+- Every table must have at least one populated row, or be omitted entirely.
+- Sentence case for headings. Markdown tables only — no HTML.
+- Apply the Security Constraints (above) to every value: placeholders for
+  IPs, hostnames, ports, tokens, credentials.
+- No emoji except where they communicate state inside a table cell.
+- Use repo-appropriate framing: IaC repos describe cluster apps and
+  namespaces in "Components"; application repos describe modules, packages,
+  or subsystems. The structure is the same; the content adapts to the repo.
+
+**Required skeleton (substitute the bracketed placeholders with real content
+for THIS repo; do not emit the brackets literally):**
+
+` + "```" + `markdown
+# [repo-name]
+
+> One-sentence tagline placing this repo in the andusystems homelab.
+
+## Purpose
+
+2-4 sentences. What this repo is, why it exists, and what role it plays in
+the broader homelab. No code, no lists.
+
+## At a glance
+
+| Field | Value |
+|---|---|
+| Type | IaC cluster / application / tooling / docs |
+| Network | VLAN-N description, or omit row if not applicable |
+| Role | hub / spoke / service / shared library |
+| Primary stack | e.g. Terraform + Ansible + ArgoCD, or Go + React |
+| Deployed by | self-bootstrap / hub ArgoCD / manual build |
+| Status | production / bootstrapping / experimental |
+
+## Components
+
+| Component | Purpose | Location |
+|---|---|---|
+| ... | ... | ... |
+
+For IaC repos: every cluster app with its Kubernetes namespace.
+For application repos: top-level modules, subsystems, or packages.
+Hard limit: ~15 rows. Group similar items if you would exceed it.
+
+## Architecture
+
+ASCII diagram of topology or data flow (≤25 lines). Followed by 1-2 sentences
+describing what the diagram shows. End with a link to docs/architecture.md
+for the deeper dive.
+
+## Quick start
+
+### Prerequisites
+
+| Tool | Version | Purpose |
+|---|---|---|
+| ... | ... | ... |
+
+### Deploy / run
+
+3-6 shell commands — the minimum to go from "fresh checkout" to "running".
+Use <placeholder> notation for any value the operator must supply. Link to
+docs/development.md for variants.
+
+` + "    ```" + `bash
+    # minimal command set
+` + "    ```" + `
+
+## Configuration
+
+| Key | Required | Description |
+|---|---|---|
+| ... | ... | ... |
+
+Cover env vars and the most important config keys (≤20 rows). Mark required
+vs optional. Never include real secret values — use <placeholder> notation.
+If the repo has more keys than fit, link to a config reference doc.
+
+## Repository layout
+
+` + "    ```" + `
+    .
+    ├── ...
+    └── ...
+` + "    ```" + `
+
+ASCII tree, ≤30 lines. Show only the top 2-3 levels and the directories that
+matter. One-line annotation per significant entry.
+
+## Related repos
+
+| Repo | Relation |
+|---|---|
+| andusystems-management | hub — provisions this cluster's ArgoCD apps |
+| ... | ... |
+
+Up to 6 rows. Link other andusystems repos this one depends on, feeds into,
+or is mirrored by. Omit the section entirely if the repo stands alone.
+
+## Further documentation
+
+- [Architecture](docs/architecture.md) — diagrams, flows, design decisions
+- [Development](docs/development.md) — local setup, build, test
+- [Changelog](CHANGELOG.md) — release history
+
+Add other relevant links (runbooks, API reference, etc.). Keep to ≤6 entries.
+` + "```" + `
 
 ## Security Constraints — MUST follow exactly
 The generated documentation will be published publicly. You must not expose internal
