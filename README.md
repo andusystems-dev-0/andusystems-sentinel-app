@@ -6,7 +6,7 @@ Autonomous SDLC orchestration engine. Sentinel monitors Forgejo repositories, ru
 
 | Mode | Trigger | What Happens |
 |------|---------|--------------|
-| **Mode 1 -- Nightly** | Cron (configurable) | Diffs Forgejo HEAD vs last run, LLM analysis, opens fix/feat/docs PRs on Forgejo, Discord notification |
+| **Mode 1 -- Nightly** | Cron (default 23:00) | Diffs Forgejo HEAD vs last run, LLM analysis, opens fix/feat/docs PRs on Forgejo, Discord notification |
 | **Mode 2 -- PR Review** | Forgejo webhook (`pull_request`) | Reviews developer PRs via LLM, posts verdict + per-file notes, optionally opens housekeeping companion PR |
 | **Mode 3 -- Sync** | Push webhook or manual | Sanitizes changed files, pushes clean content to GitHub mirror, Discord alert on findings |
 | **Mode 4 -- Migration** | Manual (`--mode migrate`) | One-time full-repo scan, sanitizes all files, pushes to GitHub mirror, Discord confirmation flow |
@@ -54,7 +54,7 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 
 | Component | Used For |
 |-----------|----------|
-| **[AI_ASSISTANT] Code CLI** | Mode 1 task execution for `fix`, `feat`, `vulnerability`, `refactor` task types; sanitization Layer 2 fallback and Layer 3; documentation generation |
+| **[AI_ASSISTANT] Code CLI** | Mode 1 task execution for `fix`, `feat`, `vulnerability`, `refactor` task types; sanitization Layer 3; documentation generation |
 | **Node.js / npm** | Building the SvelteKit web dashboard (`make web-build`) |
 
 ### 1. Build
@@ -157,9 +157,9 @@ The full configuration is in `config.yaml`. Key sections:
 
 | Section | Purpose |
 |---------|---------|
-| `sentinel` | Git identity for commits (name, email, usernames), local checkout base path |
+| `sentinel` | Git identity for commits (name, email, usernames) |
 | `forgejo` | Forgejo instance base URL |
-| `github` | GitHub API base URL, organisation, mirror commit identity |
+| `github` | GitHub API base URL, organisation, and mirror commit identity |
 | `discord` | Guild ID, channel IDs (actions, PRs, logs, git-logs), operator user IDs |
 | `pr` | Merge strategy, priority types, mention settings, housekeeping |
 | `nightly` | Cron schedule, active-dev skip window, flood threshold, session budget |
@@ -201,9 +201,6 @@ Layer 2: Ollama (semantic analysis)
     v
 Layer 3: [AI_ASSISTANT] Code CLI (optional safety net, configurable)
   Any new finding -> pending operator review
-    |
-    v
-Scrub patterns: regex substitutions on final content
     |
     v
 Staged output with SENTINEL BOT tags

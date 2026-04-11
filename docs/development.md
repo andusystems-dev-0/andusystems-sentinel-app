@@ -19,7 +19,7 @@
 | **GitHub** | Mirror target; PAT with `repo` scope |
 | **Discord** | Operator interface; bot with message content + reaction intents |
 | **Ollama** | Local LLM; requires `qwen2.5-coder:14b` model pulled |
-| **[AI_ASSISTANT] Code CLI** | Optional; enables execution of fix/feat/vulnerability/refactor tasks, sanitization Layer 2 fallback and Layer 3, and documentation generation |
+| **[AI_ASSISTANT] Code CLI** | Optional; enables execution of fix/feat/vulnerability/refactor tasks, sanitization Layer 3, and documentation generation |
 
 ## Project Structure
 
@@ -86,8 +86,6 @@ cp config.yaml.example config.yaml
 ```
 
 Edit `config.yaml` with your instance URLs, Discord channel IDs, and repo definitions. See `config.yaml.example` for the complete annotated reference.
-
-Config resolution order: YAML file -> environment variable override. See `internal/config/env.go` for the field-by-field mapping.
 
 ### 4. Run
 
@@ -183,6 +181,8 @@ These use CLI tools in `tools/` to exercise specific subsystems:
 | `SENTINEL_DB_PATH` | `/data/db/sentinel.db` | SQLite database file path |
 | `SENTINEL_INGRESS_HOST` | (empty) | If set, auto-registers Forgejo webhooks on all repos at startup |
 
+Config resolution order: YAML file -> environment variable override. See `internal/config/env.go` for the field-by-field mapping.
+
 ## Discord Bot Setup
 
 1. Create a new application at the Discord Developer Portal
@@ -223,8 +223,6 @@ The operator token (for merging) should belong to a separate account or be a per
 ```bash
 make docker-build docker-push
 ```
-
-The Docker image uses a multi-stage build: Go compilation in an Alpine builder stage, with the final image based on `alpine:3.20`. The binary runs as a non-root `sentinel` user.
 
 ### Helm Install
 

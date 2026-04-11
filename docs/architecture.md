@@ -90,9 +90,6 @@ Pre-flight checks per repo:
   - Pending migration?
     | (pass)
     v
-Create nightly session (status: running)
-    |
-    v
 Diff Forgejo HEAD vs last recorded SHA
     |
     v
@@ -100,13 +97,11 @@ Partition diffs into LLM-sized batches
     |
     v
 Ollama Role A (Analyst): identify tasks
-  Session phase: analysis
     |
     v
 Router: task type + complexity -> executor
   - [AI_ASSISTANT] Code CLI: fix, feat, vulnerability, refactor
   - LLM (Ollama): docs, dependency-update
-  Session phase: planning -> implementing
     |
     v
 Executor creates branch, commits changes
@@ -116,19 +111,15 @@ Open PR on Forgejo
     |
     v
 Post Discord notification with reaction controls
-  Session phase: verifying -> complete
     |
     v
 Update stale documentation targets (if doc-gen enabled)
     |
     v
 Post nightly digest summary
-    |
-    v
-Publish SSE events for dashboard updates
 ```
 
-When `--force` is used, the pipeline runs a full scan of all files rather than only the diff since the last run. Session budget tracking is advisory (not enforced as a hard cap).
+When `--force` is used, the pipeline runs a full scan of all files rather than only the diff since the last run.
 
 ## Data Flow: Mode 2 -- PR Review (Webhook)
 
@@ -154,7 +145,7 @@ ReviewResult: verdict + per-file notes + security assessment
 Post review comments on Forgejo PR
     |
     v
-Discord notification (high priority PRs get @here mention with cooldown)
+Discord notification (high priority PRs get @here mention)
     |
     v
 Optional: open housekeeping companion PR if files need cleanup
@@ -171,9 +162,6 @@ Diff changed files since last sync SHA
     v
 For each file:
   Load skip zones (approved values)
-    |
-    v
-  Detect template expressions (Jinja2, HCL, ERB) and protect
     |
     v
   Layer 1: gitleaks + regex patterns
@@ -197,9 +185,6 @@ For each file:
     |
     v
 Push sanitized content to GitHub mirror
-    |
-    v
-Record sync SHA in database
     |
     v
 Post findings to Discord logs channel
@@ -240,9 +225,6 @@ Gather source context (file list, up to max_context_files)
     |
     v
 Read Obsidian vault context for domain knowledge
-  - Prioritises files matching repo name
-  - Falls back to general vault files
-  - Max 10 context files
     |
     v
 Invoke [AI_ASSISTANT] Code CLI with documentation prompt
@@ -258,9 +240,6 @@ Post Discord notification with merge/close reactions
     |
     v
 Write doc snapshots to Obsidian vault
-    |
-    v
-Sync GitHub mirror description (if configured)
 ```
 
 ## Webhook Processing Architecture
@@ -309,11 +288,11 @@ All list endpoints support `?limit=N` (default varies per endpoint, max 500).
 
 ### Server-Sent Events
 
-The `/api/v1/events` endpoint streams real-time events to connected clients using SSE. The `EventBus` fans out events to all subscribers using non-blocking sends with a small per-client buffer (16 events). Events include `session:update`, `task:update`, and `progress` types. A 30-second keepalive heartbeat prevents connection timeouts. If a client falls behind, events are dropped for that client rather than blocking the pipeline.
+The `/api/v1/events` endpoint streams real-time events to connected clients using SSE. The `EventBus` fans out events to all subscribers using non-blocking sends with a small per-client buffer. Events include `session:update`, `task:update`, and `progress` types. A 30-second keepalive heartbeat prevents connection timeouts.
 
 ### Web Dashboard
 
-The embedded SvelteKit SPA is served from `GET /` via `SPAHandler`. Static assets with content hashes under `_app/` receive long-lived cache headers (1-year immutable). All other paths fall through to `index.html` for client-side routing. In dev mode (no pre-built assets), a placeholder page is served.
+The embedded SvelteKit SPA is served from `GET /` via `SPAHandler`. Static assets with content hashes under `_app/` receive long-lived cache headers. All other paths fall through to `index.html` for client-side routing.
 
 ## Drift Reconciliation
 
@@ -339,10 +318,6 @@ When an operator approves/rejects via Discord reaction, `worktree/token_index.go
 ### Scrub Patterns
 
 In addition to tag-based sanitization, configurable regex scrub patterns (`sanitize.scrub_patterns`) are applied to all file content before it reaches the GitHub mirror. These provide a deterministic final safety net for known patterns (e.g., internal hostnames, IP ranges) that should always be removed regardless of confidence scoring.
-
-### Template Expression Protection
-
-Before any sanitization layer runs, the pipeline detects template expressions (Jinja2 `{{ }}`, HCL `${ }`, ERB `<%= %>`) and registers them as skip zones. This prevents template syntax from being misidentified as secrets.
 
 ## Concurrency Model
 
@@ -370,7 +345,7 @@ Functions that call into `worktree/manager.go` must acquire the appropriate lock
 
 ## Database Design
 
-SQLite with WAL mode and single-writer constraint (`SetMaxOpenConns(1)`). Configured with `synchronous=NORMAL`, `busy_timeout=5000`, and `foreign_keys=ON`.
+SQLite with WAL mode and single-writer constraint (`SetMaxOpenConns(1)`).
 
 ### Tables
 
@@ -380,10 +355,9 @@ SQLite with WAL mode and single-writer constraint (`SetMaxOpenConns(1)`). Config
 | `sanitization_findings` | Per-layer findings from sanitization pipeline |
 | `pending_resolutions` | Operator decisions on findings (pending/approved/rejected/custom/reanalyzing/superseded) |
 | `approved_values` | Allowlist of values that should never be re-flagged (per repo) |
-| `repo_sync_state` | Last synced Forgejo HEAD SHA per repo |
-| `sync_runs` | Mode 3/4 execution records with file counts and finding counts |
-| `tasks` | Task records with executor type, status, PR number, session ID, implementation plan |
-| `nightly_sessions` | Nightly session records (phase, budget, task counts, start/end time) |
+| `sync_runs` | Mode 3/4 execution records with baseline SHA tracking |
+| `tasks` | Task records for audit trail (links to sessions and branches) |
+| `sessions` | Nightly session records (start/end time, repo, status) |
 | `sentinel_actions` | Append-only audit log (action type, repo, entity, detail JSON) |
 | `confirmations` | TTL-based confirmation state for `--force` migrations |
 | `pr_reviews` | PR review dedup records + migration status per repo |
@@ -417,14 +391,6 @@ When Ollama times out or returns an error during Layer 2 sanitization, sentinel 
 ### SSE Event Bus
 
 The event bus uses a fan-out pattern with non-blocking sends. Each SSE client gets a small buffered channel (16 events). If a client falls behind, events are dropped for that client rather than blocking the pipeline. This prevents slow browser connections from affecting nightly processing.
-
-### Local Checkout Refresh
-
-After a PR merge, sentinel can fast-forward the operator's local checkout of the repo (configured via `sentinel.local_checkout_base`). This is best-effort with multiple safety checks: refuses dirty working trees, skips non-fast-forward merges, and only operates on default branches.
-
-### Nightly Session Tracking
-
-Nightly runs are modelled as sessions with distinct phases (analysis, planning, implementing, verifying, complete). Session budget is advisory -- tasks are not dropped when the budget is exceeded. Sessions publish SSE events so the web dashboard can show live progress.
 
 ## Graceful Shutdown
 

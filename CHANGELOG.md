@@ -7,11 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- Local checkout refresh: fast-forward operator's local clone after PR merges (`sentinel.local_checkout_base` config)
 - Full scan option for nightly runs via Discord bot `/sentinel nightly --force` command
 - `GitLogsChannelID` Discord configuration for dedicated git operation logging
 - Dedicated PR channel (`pr_channel_id`) with fallback to actions channel
-- Nightly session management with session budget tracking and phase progression (analysis, planning, implementing, verifying, complete)
+- Nightly session management with session budget tracking
 - Discord slash command handling for `/sentinel` commands (nightly, status)
 - REST API (`/api/v1/`) for sessions, tasks, PRs, actions, and repo listing
 - Server-Sent Events endpoint (`/api/v1/events`) for real-time dashboard updates
@@ -27,7 +26,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Scrub patterns (`sanitize.scrub_patterns`) for regex-based content substitution before mirroring
 - Layer 2 timeout with [AI_ASSISTANT] Code CLI fallback (`sanitize.layer2_timeout_seconds`)
 - Configurable Layer 3 enable/disable (`sanitize.layer3_enabled`)
-- Template expression protection (Jinja2, HCL, ERB) during sanitization to prevent false positives
 - Documentation generation mode (`--mode doc-gen`) with Obsidian vault integration
 - Changelog management (`internal/docs/changelog.go`) with LLM-assisted generation
 - Obsidian vault snapshot writing for generated documentation
@@ -65,7 +63,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sanitization Layer 3 now uses [AI_ASSISTANT] Code CLI instead of direct [AI_PROVIDER] API calls
 
 ### Fixed
-- Sync now uses MixedReset with per-file Add to prevent dropping workflow files during staging
 - Sync status messaging now correctly reports findings count and push result
 - Error handling improvements in sync pipeline for partial failures
 - `RenderTaskSpec` function signature updated for consistency
