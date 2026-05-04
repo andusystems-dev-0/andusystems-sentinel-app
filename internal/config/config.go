@@ -4,6 +4,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -141,13 +143,13 @@ type SanitizeConfig struct {
 	CategoryReasons           map[string]string `yaml:"category_reasons"`
 	ScrubPatterns             []ScrubPattern    `yaml:"scrub_patterns"`
 	// Layer2TimeoutSeconds bounds a single Ollama Layer-2 call. On timeout or
-	// any Ollama error, Layer 2 falls back to the [AI_ASSISTANT] API (if configured).
+	// any Ollama error, Layer 2 falls back to the Claude API (if configured).
 	// Zero or negative uses the default of 60 seconds.
 	Layer2TimeoutSeconds int `yaml:"layer2_timeout_seconds"`
-	// Layer3Enabled controls whether the [AI_ASSISTANT] API safety-net pass runs on
+	// Layer3Enabled controls whether the Claude API safety-net pass runs on
 	// every file. When false, only Layer 1 (gitleaks) and Layer 2 (Ollama,
-	// with [AI_ASSISTANT] fallback on timeout) run. Disabling Layer 3 dramatically
-	// reduces [AI_ASSISTANT] usage — [AI_ASSISTANT] is then only called when Ollama fails.
+	// with Claude fallback on timeout) run. Disabling Layer 3 dramatically
+	// reduces Claude usage — Claude is then only called when Ollama fails.
 	Layer3Enabled bool `yaml:"layer3_enabled"`
 }
 
@@ -205,6 +207,39 @@ type RepoConfig struct {
 	// DocTargets overrides doc_gen.default_targets for this repo.
 	// Leave empty to use the global defaults.
 	DocTargets []string `yaml:"doc_targets"`
+	// KeepPaths bypasses sanitization for matching paths — files are copied
+	// to the GitHub mirror as-is. Used when a repo's CI lives on GitHub and
+	// needs `.github/workflows/*` preserved verbatim. Supports `**` suffix
+	// for directory globs.
+	KeepPaths []string `yaml:"keep_paths"`
+}
+
+// IsKeepPath reports whether filename matches any of repo's KeepPaths.
+// Supports `dir/**` directory globs in addition to filepath.Match patterns.
+func (r *RepoConfig) IsKeepPath(filename string) bool {
+	for _, pattern := range r.KeepPaths {
+		if strings.HasSuffix(pattern, "/**") {
+			dir := strings.TrimSuffix(pattern, "/**")
+			if strings.HasPrefix(filename, dir+"/") || filename == dir {
+				return true
+			}
+			continue
+		}
+		if matched, _ := filepath.Match(pattern, filename); matched {
+			return true
+		}
+	}
+	return false
+}
+
+// RepoByName returns the RepoConfig with the given Name, or nil if not found.
+func (c *Config) RepoByName(name string) *RepoConfig {
+	for i := range c.Repos {
+		if c.Repos[i].Name == name {
+			return &c.Repos[i]
+		}
+	}
+	return nil
 }
 
 // Load reads and parses the config file at path, then resolves env vars.
@@ -279,7 +314,7 @@ func applyDefaults(cfg *Config) {
 		cfg.ClaudeAPI.RPMLimit = 50
 	}
 	if cfg.ClaudeCode.BinaryPath == "" {
-		cfg.ClaudeCode.BinaryPath = "/usr/local/bin/[AI_ASSISTANT]"
+		cfg.ClaudeCode.BinaryPath = "/usr/local/bin/claude"
 	}
 	if cfg.ClaudeCode.TaskTimeoutMinutes == 0 {
 		cfg.ClaudeCode.TaskTimeoutMinutes = 30

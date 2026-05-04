@@ -99,8 +99,23 @@ func (r *Runner) Sync(ctx context.Context, repoName string) error {
 	// push silently deletes every other file from the GitHub mirror.
 	var changedFiles []string
 
+	// Look up the repo's keep_paths once; nil if no per-repo config exists.
+	repoCfg := r.cfg.RepoByName(repoName)
+
 	// Process each changed file.
 	for _, diff := range diffs {
+		// Per-repo keep_paths bypass sanitization entirely — copy as-is.
+		// Used for files that must reach the GitHub mirror unchanged
+		// (e.g. .github/workflows/* on a repo whose CI runs on GitHub).
+		if repoCfg != nil && repoCfg.IsKeepPath(diff.Filename) {
+			content, err := r.wt.ReadForgejoFile(ctx, repoName, diff.Filename)
+			if err == nil {
+				r.wt.WriteGitHubStaging(ctx, repoName, diff.Filename, content)
+				changedFiles = append(changedFiles, diff.Filename)
+			}
+			continue
+		}
+
 		if r.isSkipPattern(diff.Filename) {
 			continue
 		}

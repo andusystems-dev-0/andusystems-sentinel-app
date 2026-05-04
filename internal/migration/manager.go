@@ -74,7 +74,7 @@ func (m *Manager) MigrateWithKind(ctx context.Context, repoName string, force bo
 	slog.Info("mode4 migration start", "repo", repoName, "force", force, "kind", kind)
 
 	// Pre-checks.
-	status, err := m.db.Reviews.GetMigrationStatus(ctx, repoName)
+	status, err := m.db.MigrationState.GetMigrationStatus(ctx, repoName)
 	if err != nil {
 		return err
 	}
@@ -100,7 +100,7 @@ func (m *Manager) MigrateWithKind(ctx context.Context, repoName string, force bo
 	// failures surface immediately rather than after all the expensive
 	// processing is done.
 	if err := m.github.EnsureRepo(ctx, githubPath, description); err != nil {
-		m.discord.PostChannelMessage(ctx, m.cfg.Discord.CommandChannelID,
+		m.discord.PostChannelMessage(ctx, m.gitLogsCh(),
 			fmt.Sprintf(
 				"❌ Migration preflight failed for **%s**\n\n"+
 					"Cannot access or create GitHub mirror repo `%s`.\n"+
@@ -117,7 +117,7 @@ func (m *Manager) MigrateWithKind(ctx context.Context, repoName string, force bo
 	// Require operator confirmation for ALL migrations — initial, force, or
 	// auto-bootstrap. The Discord message wording varies by kind.
 	confirmed, err := ConfirmMigration(ctx, repoName, githubPath, kind, m.db, m.discord,
-		m.cfg.Discord.CommandChannelID, m.cfg.Allowlist.ConfirmationTTLMinutes)
+		m.cfg.Discord.ActionsChannelID, m.cfg.Allowlist.ConfirmationTTLMinutes)
 	if err != nil {
 		return fmt.Errorf("migration confirmation: %w", err)
 	}
@@ -175,7 +175,7 @@ func (m *Manager) MigrateWithKind(ctx context.Context, repoName string, force bo
 	}
 
 	// Start migration.
-	m.db.Reviews.StartMigration(ctx, repoName)
+	m.db.MigrationState.StartMigration(ctx, repoName)
 	m.db.Actions.Log(ctx, "mode4_migration_start", repoName, "", fmt.Sprintf(`{"force":%v,"files":%d}`, force, len(filenames)))
 
 	runID := newID()
@@ -190,8 +190,24 @@ func (m *Manager) MigrateWithKind(ctx context.Context, repoName string, force bo
 
 	slog.Info("mode4 migration: processing files", "repo", repoName, "total", len(filenames))
 
+	// Look up the repo's keep_paths once; nil if no per-repo config exists.
+	repoCfg := m.cfg.RepoByName(repoName)
+
 	// Process each file sequentially.
 	for i, filename := range filenames {
+		// Per-repo keep_paths bypass sanitization entirely — copy as-is.
+		if repoCfg != nil && repoCfg.IsKeepPath(filename) {
+			content, err := m.wt.ReadForgejoFile(ctx, repoName, filename)
+			if err == nil {
+				m.wt.WriteGitHubStaging(ctx, repoName, filename, content)
+				run.FilesSynced++
+				slog.Info("mode4 migration: keep_paths bypass", "file", filename, "n", fmt.Sprintf("%d/%d", i+1, len(filenames)))
+			} else {
+				slog.Warn("migration: keep_paths read failed", "file", filename, "err", err)
+			}
+			continue
+		}
+
 		if m.isSkipPattern(filename) {
 			slog.Info("mode4 migration: skipping", "file", filename, "n", fmt.Sprintf("%d/%d", i+1, len(filenames)))
 			continue
@@ -246,13 +262,13 @@ func (m *Manager) MigrateWithKind(ctx context.Context, repoName string, force bo
 					SyncRunID:            runID,
 					SuggestedReplacement: f.SuggestedReplacement,
 					Status:               types.StatusPending,
-					DiscordChannelID:     m.cfg.Discord.FindingsChannelID,
+					DiscordChannelID:     m.cfg.Discord.LogsChannelID,
 				}
 				m.db.Resolutions.Create(ctx, resolution)
 
 				msgID, err := m.discord.PostFinding(ctx, resolution, f)
 				if err == nil {
-					m.discord.SeedFindingReactions(ctx, m.cfg.Discord.FindingsChannelID, msgID)
+					m.discord.SeedFindingReactions(ctx, m.cfg.Discord.LogsChannelID, msgID)
 					issueNum, _ := m.forge.CreateIssue(ctx, repoName, types.IssueOptions{
 						Title: fmt.Sprintf("[Sentinel] %s finding in %s:%d", f.Category, filepath.Base(filename), f.LineNumber),
 						Body:  fmt.Sprintf("Sanitization finding during Mode 4 migration.\n\nFile: `%s`\nLine: %d\nCategory: `%s`\nConfidence: `%s`", filename, f.LineNumber, f.Category, f.Confidence),
@@ -297,7 +313,7 @@ func (m *Manager) MigrateWithKind(ctx context.Context, repoName string, force bo
 	// reconciler won't detect that GitHub is still behind.
 	if pushOK {
 		m.db.SyncRuns.SetRepoSyncSHA(ctx, repoName, headSHA)
-		m.db.Reviews.CompleteMigration(ctx, repoName, headSHA)
+		m.db.MigrationState.CompleteMigration(ctx, repoName, headSHA)
 	}
 
 	now := time.Now()
@@ -305,17 +321,19 @@ func (m *Manager) MigrateWithKind(ctx context.Context, repoName string, force bo
 	run.Status = "complete"
 	m.db.SyncRuns.Update(ctx, run)
 
-	m.discord.PostChannelMessage(ctx, m.cfg.Discord.CommandChannelID,
-		fmt.Sprintf(
-			"✅ Migration complete: **%s**\n"+
-				"  Files migrated: %d\n"+
-				"  High-confidence auto-redacted: %d\n"+
-				"  Pending operator review: %d\n"+
-				"  Forgejo HEAD: `%s`",
-			repoName, run.FilesSynced, run.FindingsHigh,
-			run.FindingsMedium+run.FindingsLow, headSHA,
-		),
+	completionMsg := fmt.Sprintf(
+		"✅ Migration complete: **%s**\n"+
+			"  Files migrated: %d\n"+
+			"  High-confidence auto-redacted: %d\n"+
+			"  Pending operator review: %d\n"+
+			"  Forgejo HEAD: `%s`",
+		repoName, run.FilesSynced, run.FindingsHigh,
+		run.FindingsMedium+run.FindingsLow, headSHA,
 	)
+	if commitURL := m.githubCommitURL(repoName, headSHA); commitURL != "" {
+		completionMsg += "\n" + commitURL
+	}
+	m.discord.PostChannelMessage(ctx, m.gitLogsCh(), completionMsg)
 
 	m.db.Actions.Log(ctx, "mode4_migration_complete", repoName, runID,
 		fmt.Sprintf(`{"files":%d,"high":%d,"medium":%d,"low":%d}`,
@@ -355,7 +373,7 @@ func (m *Manager) AutoBootstrap(ctx context.Context) {
 		slog.Info("bootstrap: github mirror empty, running initial migration",
 			"repo", r.Name, "github_path", r.GitHubPath)
 		// Clear any stale DB status so Migrate() doesn't refuse.
-		if err := m.db.Reviews.SetMigrationStatus(ctx, r.Name, "pending", "", ""); err != nil {
+		if err := m.db.MigrationState.SetMigrationStatus(ctx, r.Name, "pending", "", ""); err != nil {
 			slog.Warn("bootstrap: reset migration status failed",
 				"repo", r.Name, "err", err)
 			continue
@@ -375,9 +393,28 @@ func (m *Manager) Status(_ context.Context, repoName string) (*types.MigrationSt
 	return &types.MigrationState{Repo: repoName}, nil
 }
 
+func (m *Manager) gitLogsCh() string {
+	if ch := m.cfg.Discord.GitLogsChannelID; ch != "" {
+		return ch
+	}
+	return m.cfg.Discord.LogsChannelID
+}
+
+func (m *Manager) githubCommitURL(repoName, sha string) string {
+	if sha == "" {
+		return ""
+	}
+	for _, repo := range m.cfg.Repos {
+		if repo.Name == repoName && repo.GitHubPath != "" {
+			return fmt.Sprintf("https://github.com/%s/commit/%s", repo.GitHubPath, sha)
+		}
+	}
+	return ""
+}
+
 func (m *Manager) isSkipPattern(filename string) bool {
 	for _, pattern := range m.cfg.Sanitize.SkipPatterns {
-		// Handle directory glob patterns like ".[AI_ASSISTANT]/**"
+		// Handle directory glob patterns like ".claude/**"
 		if strings.HasSuffix(pattern, "/**") {
 			dir := strings.TrimSuffix(pattern, "/**")
 			if strings.HasPrefix(filename, dir+"/") || filename == dir {
